@@ -15,8 +15,9 @@ use serde::{Serializer, Deserializer};
 use tokio::{AsyncRead, AsyncWrite};
 use tokio::reactor::{PollEvented, Handle as TokioHandle};
 use futures::{Poll, Async};
-use platform::tokio_uds::{UnixStream as TokioUnixStream};
 use platform::libc;
+use platform::mio::{Evented, Poll as MioPoll, Token, Ready, PollOpt};
+use platform::mio::unix::EventedFd;
 
 macro_rules! use_seqpacket {
     () => { cfg!(not(target_os = "macos")) };
@@ -25,7 +26,7 @@ macro_rules! use_seqpacket {
 pub(crate) const MAX_MSG_FDS: usize = 32;
 
 pub struct MessageChannel {
-    socket: TokioUnixStream,
+    socket: PollEvented<ScopedFd>,
     cmsg: Cmsg,
 }
 
@@ -49,8 +50,8 @@ impl MessageChannel {
             }
 
             Ok((
-                MessageChannel { socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(sockets[0]), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
-                MessageChannel { socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(sockets[1]), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
+                MessageChannel { socket: PollEvented::new(ScopedFd(sockets[0]), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
+                MessageChannel { socket: PollEvented::new(ScopedFd(sockets[1]), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
             ))
         }
     }
@@ -58,7 +59,7 @@ impl MessageChannel {
     pub fn send_to_child<F>(self, command: &mut process::Command, transmit_and_launch: F) -> io::Result<process::Child> where
         F: FnOnce(&mut process::Command, &ChildMessageChannel) -> io::Result<process::Child>
     {
-        let fd = self.socket.as_raw_fd();
+        let fd = self.socket.get_ref().0;
 
         unsafe { clear_cloexec(fd)? }
 
@@ -76,7 +77,7 @@ pub struct ChildMessageChannel {
 impl ChildMessageChannel {
     pub fn into_channel(self, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
         unsafe { Ok(
-            MessageChannel { socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(self.fd), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
+            MessageChannel { socket: PollEvented::new(ScopedFd(self.fd), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
         )}
     }
 }
@@ -92,11 +93,15 @@ impl io::Write for MessageChannel {
         if let Async::Ready(()) = self.socket.poll_write() {
             unsafe { 
                 self.cmsg.set_data(buffer);
-                let result = libc::sendmsg(self.socket.as_raw_fd(), self.cmsg.ptr(), 0);
+                let result = libc::sendmsg(self.socket.get_ref().0, self.cmsg.ptr(), 0);
                 if result >= 0 {
                     Ok(result as usize)
                 } else {
-                    Err(io::Error::last_os_error())
+                    let err = io::Error::last_os_error();
+                    if err.kind() == io::ErrorKind::WouldBlock {
+                        self.socket.need_write();
+                    }
+                    Err(err)
                 }
             }
         } else {
@@ -112,7 +117,10 @@ impl io::Write for MessageChannel {
 
 impl AsyncWrite for MessageChannel {
     fn shutdown(&mut self) -> Poll<(), io::Error> {
-        AsyncWrite::shutdown(&mut self.socket)
+        if unsafe { libc::shutdown(self.socket.get_ref().0, libc::SHUT_RDWR) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Async::Ready(()))
     }
 }
 
@@ -122,11 +130,15 @@ impl io::Read for MessageChannel {
             unsafe { 
                 self.cmsg.set_data(buffer);
                 self.cmsg.reset_fd_count();
-                let result = libc::recvmsg(self.socket.as_raw_fd(), self.cmsg.ptr(), 0);
+                let result = libc::recvmsg(self.socket.get_ref().0, self.cmsg.ptr(), 0);
                 if result >= 0 {
                     Ok(result as usize)
                 } else {
-                    Err(io::Error::last_os_error())
+                    let err = io::Error::last_os_error();
+                    if err.kind() == io::ErrorKind::WouldBlock {
+                        self.socket.need_read();
+                    }
+                    Err(err)
                 }
             }
         } else {
@@ -209,7 +221,7 @@ impl NamedMessageChannel {
                 libc::close(self.socket);
 
                 Ok(MessageChannel {
-                    socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(socket), &self.tokio_loop)?,
+                    socket: PollEvented::new(ScopedFd(socket), &self.tokio_loop)?,
                     cmsg: Cmsg::new(MAX_MSG_FDS),
                 })
             } else {
@@ -222,7 +234,7 @@ impl NamedMessageChannel {
                 libc::close(self.socket);
 
                 Ok(MessageChannel {
-                    socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(cmsg.fds()[0]), &self.tokio_loop)?,
+                    socket: PollEvented::new(ScopedFd(cmsg.fds()[0]), &self.tokio_loop)?,
                     cmsg: Cmsg::new(MAX_MSG_FDS),
                 })
             }
@@ -246,7 +258,7 @@ impl NamedMessageChannel {
                 }
 
                 Ok(MessageChannel {
-                    socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(socket), tokio_loop)?,
+                    socket: PollEvented::new(ScopedFd(socket), tokio_loop)?,
                     cmsg: Cmsg::new(MAX_MSG_FDS),
                 })
             } else {
@@ -275,10 +287,40 @@ impl NamedMessageChannel {
                 libc::close(sockets[1]);
 
                 Ok(MessageChannel {
-                    socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(sockets[0]), tokio_loop)?,
+                    socket: PollEvented::new(ScopedFd(sockets[0]), tokio_loop)?,
                     cmsg: Cmsg::new(MAX_MSG_FDS),
                 })
             }
         }
+    }
+}
+
+struct ScopedFd(libc::c_int);
+
+impl Drop for ScopedFd {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.0); }
+    }
+}
+
+impl Evented for ScopedFd {
+    fn register(&self,
+                poll: &MioPoll,
+                token: Token,
+                events: Ready,
+                opts: PollOpt) -> io::Result<()> {
+        EventedFd(&self.0).register(poll, token, events, opts)
+    }
+
+    fn reregister(&self,
+                  poll: &MioPoll,
+                  token: Token,
+                  events: Ready,
+                  opts: PollOpt) -> io::Result<()> {
+        EventedFd(&self.0).reregister(poll, token, events, opts)
+    }
+
+    fn deregister(&self, poll: &MioPoll) -> io::Result<()> {
+        EventedFd(&self.0).deregister(poll)
     }
 }

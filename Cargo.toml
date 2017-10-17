@@ -27,8 +27,8 @@ winhandle = "0.1"
 mio-named-pipes = "0.1"
 
 [target.'cfg(unix)'.dependencies]
-tokio-uds = "0.1"
 libc = "0.2"
+mio = "0.6"
 
 [dev-dependencies]
 serde_urlencoded = "0.5"

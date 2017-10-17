@@ -1,8 +1,8 @@
 use ::SendableFile;
 use ser::{SerializeWrapper, SerializeWrapperGuard};
 
-extern crate tokio_uds;
 extern crate libc;
+extern crate mio;
 
 mod channel;
 mod sharedmem;
