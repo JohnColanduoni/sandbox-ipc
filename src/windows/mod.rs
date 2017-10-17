@@ -1,4 +1,5 @@
-use super::SendableFile;
+use ::SendableFile;
+use ::ser::{SerializeWrapper, SerializeWrapperGuard};
 
 pub extern crate mio_named_pipes;
 extern crate winapi;
@@ -97,52 +98,73 @@ impl<'de> Deserialize<'de> for SendableFile {
     }
 }
 
-pub(crate) fn push_current_channel_serialize(channel: &Channel) -> impl Drop {
-    struct Guard(Option<HandleSender>);
+pub(crate) struct ChannelSerializeWrapper;
 
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            CURRENT_SERIALIZE_CHANNEL_REMOTE_PROCESS.with(|sender_guard| {
-                let mut sender_guard = sender_guard.borrow_mut();
-                sender_guard.take().unwrap().commit();
-                *sender_guard = self.0.take()
-            });
-        }
+impl<'a, C> SerializeWrapper<'a, C> for ChannelSerializeWrapper where
+    C: Channel,
+{
+    type SerializeGuard = ChannelSerializeGuard;
+    type DeserializeGuard = ChannelDeserializeGuard;
+
+    fn before_serialize(channel: &'a mut C) -> ChannelSerializeGuard {
+        let mut sender = Some(HandleSender {
+            target: channel.handle_target(),
+            handles: Vec::new(),
+        });
+
+        CURRENT_SERIALIZE_CHANNEL_REMOTE_PROCESS.with(|x| 
+            mem::swap(
+                &mut *x.borrow_mut(),
+                &mut sender,
+            )
+        );
+        ChannelSerializeGuard(sender)
     }
 
-    let mut sender = Some(HandleSender {
-        target: channel.handle_target(),
-        handles: Vec::new(),
-    });
-
-    CURRENT_SERIALIZE_CHANNEL_REMOTE_PROCESS.with(|x| 
-        mem::swap(
-            &mut *x.borrow_mut(),
-            &mut sender,
-        )
-    );
-    Guard(sender)
-}
-
-pub(crate) fn push_current_channel_deserialize(_channel: &Channel) -> impl Drop {
-    struct Guard(Option<HandleReceiver>);
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            CURRENT_DESERIALIZE_CHANNEL_REMOTE_PROCESS.with(|x| *x.borrow_mut() = self.0.take());
-        }
+    fn before_deserialize(_channel: &'a mut C) -> ChannelDeserializeGuard {
+        let mut receiver = Some(HandleReceiver);
+        CURRENT_DESERIALIZE_CHANNEL_REMOTE_PROCESS.with(|x|
+            mem::swap(
+                &mut *x.borrow_mut(),
+                &mut receiver,
+            )
+        );
+        ChannelDeserializeGuard(receiver)
     }
-
-    let mut receiver = Some(HandleReceiver);
-    CURRENT_DESERIALIZE_CHANNEL_REMOTE_PROCESS.with(|x|
-        mem::swap(
-            &mut *x.borrow_mut(),
-            &mut receiver,
-        )
-    );
-    Guard(receiver)
 }
 
+pub(crate) struct ChannelSerializeGuard(Option<HandleSender>);
+
+impl Drop for ChannelSerializeGuard {
+    fn drop(&mut self) {
+        CURRENT_SERIALIZE_CHANNEL_REMOTE_PROCESS.with(|sender_guard| {
+            let mut sender_guard = sender_guard.borrow_mut();
+            *sender_guard = self.0.take()
+        });
+    }
+}
+
+impl<'a> SerializeWrapperGuard<'a> for ChannelSerializeGuard {
+    fn commit(self) {
+        CURRENT_SERIALIZE_CHANNEL_REMOTE_PROCESS.with(|sender_guard| {
+            let mut sender_guard = sender_guard.borrow_mut();
+            sender_guard.as_mut().unwrap().handles.clear();
+        });
+    }
+}
+
+pub(crate) struct ChannelDeserializeGuard(Option<HandleReceiver>);
+
+impl Drop for ChannelDeserializeGuard {
+    fn drop(&mut self) {
+        CURRENT_DESERIALIZE_CHANNEL_REMOTE_PROCESS.with(|x| *x.borrow_mut() = self.0.take());
+    }
+}
+
+impl<'a> SerializeWrapperGuard<'a> for ChannelDeserializeGuard {
+    fn commit(self) {
+    }
+}
 
 pub(crate) trait Channel {
     fn handle_target(&self) -> HandleTarget<HANDLE>;
@@ -201,9 +223,5 @@ impl HandleSender {
 
             Ok(remote_handle)
         }
-    }
-
-    fn commit(mut self) {
-        self.handles.clear();
     }
 }
