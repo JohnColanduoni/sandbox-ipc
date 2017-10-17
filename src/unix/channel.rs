@@ -149,15 +149,9 @@ impl AsyncRead for MessageChannel {
 }
 
 pub struct NamedMessageChannel {
-    socket: libc::c_int,
+    socket: ScopedFd,
     tokio_loop: TokioHandle,
     name: OsString,
-}
-
-impl Drop for NamedMessageChannel {
-    fn drop(&mut self) {
-        unsafe { libc::close(self.socket); }
-    }
 }
 
 // NamedMessageChannel operates in one of two ways, depending on whether SOCK_SEQPACKET is supported.
@@ -172,11 +166,14 @@ impl NamedMessageChannel {
 
         unsafe {
             if use_seqpacket!() {
-                let socket = libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0);
-                set_cloexec(socket)?;
+                let socket = ScopedFd(libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0));
+                set_cloexec(socket.0)?;
 
                 let addr = sockaddr_un(&name);
-                if libc::bind(socket, &addr as *const _ as *const libc::sockaddr, mem::size_of_val(&addr) as _) < 0 {
+                if libc::bind(socket.0, &addr as *const _ as *const libc::sockaddr, mem::size_of_val(&addr) as _) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::listen(socket.0, 1) < 0 {
                     return Err(io::Error::last_os_error());
                 }
 
@@ -186,11 +183,11 @@ impl NamedMessageChannel {
                     name: OsString::from(name),
                 })
             } else {
-                let socket = libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0);
-                set_cloexec(socket)?;
+                let socket = ScopedFd(libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0));
+                set_cloexec(socket.0)?;
 
                 let addr = sockaddr_un(&name);
-                if libc::bind(socket, &addr as *const _ as *const libc::sockaddr, mem::size_of_val(&addr) as _) < 0 {
+                if libc::bind(socket.0, &addr as *const _ as *const libc::sockaddr, mem::size_of_val(&addr) as _) < 0 {
                     return Err(io::Error::last_os_error());
                 }
 
@@ -211,12 +208,10 @@ impl NamedMessageChannel {
         // TODO: use timeout
         unsafe {
             if use_seqpacket!() {
-                let socket = libc::accept(self.socket, ptr::null_mut(), ptr::null_mut());
-                
+                let socket = libc::accept(self.socket.0, ptr::null_mut(), ptr::null_mut());
                 if socket < 0 {
                     return Err(io::Error::last_os_error());
                 }
-                libc::close(self.socket);
 
                 Ok(MessageChannel {
                     socket: PollEvented::new(ScopedFd(socket), &self.tokio_loop)?,
@@ -226,10 +221,9 @@ impl NamedMessageChannel {
                 let mut buffer = [0u8; 1];
                 let mut cmsg = Cmsg::new(1);
                 cmsg.set_data(&buffer);
-                if libc::recvmsg(self.socket, cmsg.ptr(), 0) < 0 {
+                if libc::recvmsg(self.socket.0, cmsg.ptr(), 0) < 0 {
                     return Err(io::Error::last_os_error());
                 }
-                libc::close(self.socket);
 
                 Ok(MessageChannel {
                     socket: PollEvented::new(ScopedFd(cmsg.fds()[0]), &self.tokio_loop)?,
