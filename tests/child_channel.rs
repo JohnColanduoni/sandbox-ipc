@@ -17,13 +17,13 @@ mod mp_channel_base;
 
 fn main() {
     if let Some(arg) = env::args().find(|x| x.starts_with(CHILD_CHANNEL_ARG)) {
-        let mut tokio_loop = TokioLoop::new().unwrap();
+        let tokio_loop = TokioLoop::new().unwrap();
         let channel_serialized: OsChildMessageChannel = serde_urlencoded::from_str(&arg[CHILD_CHANNEL_ARG.len()..]).unwrap();
         let channel = channel_serialized.into_channel(&tokio_loop.handle()).unwrap();
 
         mp_channel_base::run_child(tokio_loop, channel);
     } else {
-        let mut tokio_loop = TokioLoop::new().unwrap();
+        let tokio_loop = TokioLoop::new().unwrap();
         let (a, b) = OsMessageChannel::pair(&tokio_loop.handle()).unwrap();
 
         let mut child_command = Command::new(env::current_exe().unwrap());

@@ -1,5 +1,5 @@
 use ::SendableFile;
-use ::ser::{BincodeDatagram, SerializeWrapper, SerializeWrapperGuard};
+use ::ser::{SerializeWrapper, SerializeWrapperGuard};
 
 pub extern crate mio_named_pipes;
 extern crate winapi;
