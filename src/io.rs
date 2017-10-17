@@ -1,4 +1,5 @@
 use super::*;
+use ser::BincodeDatagram;
 
 use std::{io, fs, slice};
 use std::ops::Deref;

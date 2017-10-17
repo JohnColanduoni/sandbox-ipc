@@ -20,7 +20,6 @@ extern crate futures;
 #[macro_use] extern crate winhandle;
 
 mod ser;
-pub use ser::*;
 mod io;
 pub use io::*;
 

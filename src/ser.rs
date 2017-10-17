@@ -46,9 +46,6 @@ impl<S, T, R, W> BincodeDatagram<S, T, R, W> where
             _phantom: PhantomData,
         }
     }
-
-    pub fn get_ref(&self) -> &S { &self.io }
-    pub fn get_mut(&mut self) -> &mut S { &mut self.io }
 }
 
 impl<S, T, R, W> Stream for BincodeDatagram<S, T, R, W> where
