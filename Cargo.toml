@@ -32,7 +32,6 @@ mio = "0.6"
 
 [dev-dependencies]
 serde_urlencoded = "0.5"
-futures-await = { git = 'https://github.com/alexcrichton/futures-await' }
 
 [[test]]
 name = "child_channel"

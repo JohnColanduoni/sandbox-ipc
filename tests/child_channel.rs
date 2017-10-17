@@ -1,8 +1,6 @@
-#![feature(proc_macro, conservative_impl_trait, generators)]
-
 extern crate sandbox_ipc;
 extern crate tokio_core;
-extern crate futures_await as futures;
+extern crate futures;
 
 #[macro_use] extern crate serde_derive;
 extern crate serde_urlencoded;
@@ -23,7 +21,7 @@ fn main() {
         let channel_serialized: OsChildMessageChannel = serde_urlencoded::from_str(&arg[CHILD_CHANNEL_ARG.len()..]).unwrap();
         let channel = channel_serialized.into_channel(&tokio_loop.handle()).unwrap();
 
-        tokio_loop.run(mp_channel_base::run_child(channel)).unwrap();
+        mp_channel_base::run_child(tokio_loop, channel);
     } else {
         let mut tokio_loop = TokioLoop::new().unwrap();
         let (a, b) = OsMessageChannel::pair(&tokio_loop.handle()).unwrap();
@@ -33,7 +31,7 @@ fn main() {
             command.arg(format!("{}{}", CHILD_CHANNEL_ARG, serde_urlencoded::to_string(&child_channel).unwrap())).spawn()
         }).unwrap();
 
-        tokio_loop.run(mp_channel_base::run_parent(a)).unwrap();
+        mp_channel_base::run_parent(tokio_loop, a);
 
         if !child.wait().unwrap().success() {
             panic!("child process returned failure exit code");

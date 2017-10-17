@@ -1,4 +1,3 @@
-#![feature(conservative_impl_trait)]
 #![feature(collections_range)]
 
 #[macro_use] extern crate log;

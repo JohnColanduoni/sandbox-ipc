@@ -1,8 +1,6 @@
-#![feature(proc_macro, conservative_impl_trait, generators)]
-
 extern crate sandbox_ipc;
 extern crate tokio_core;
-extern crate futures_await as futures;
+extern crate futures;
 
 #[macro_use] extern crate serde_derive;
 
@@ -23,7 +21,7 @@ fn main() {
         let channel_name = OsStr::new(&arg[CHILD_CHANNEL_ARG.len()..]);
         let channel = OsNamedMessageChannel::connect(&channel_name, None, &tokio_loop.handle()).unwrap();
 
-        tokio_loop.run(mp_channel_base::run_child(channel)).unwrap();
+        mp_channel_base::run_child(tokio_loop, channel);
     } else {
         let mut tokio_loop = TokioLoop::new().unwrap();
         let channel_server = OsNamedMessageChannel::new(&tokio_loop.handle()).unwrap();
@@ -34,7 +32,7 @@ fn main() {
 
         let channel = channel_server.accept(None).unwrap();
 
-        tokio_loop.run(mp_channel_base::run_parent(channel)).unwrap();
+        mp_channel_base::run_parent(tokio_loop, channel);
 
         if !child.wait().unwrap().success() {
             panic!("child process returned failure exit code");
