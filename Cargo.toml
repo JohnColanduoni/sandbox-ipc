@@ -33,3 +33,7 @@ futures-await = { git = 'https://github.com/alexcrichton/futures-await' }
 [[test]]
 name = "child_channel"
 harness = false
+
+[[test]]
+name = "named_channel"
+harness = false

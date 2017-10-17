@@ -40,7 +40,7 @@ pub enum SharedMemAccess {
 mod tests {
     use super::*;
 
-    use std::{fs, env};
+    use std::{fs, env, thread};
     use std::io::{Write, Read, Seek, SeekFrom};
 
     use futures::{Sink, Stream};
@@ -49,6 +49,21 @@ mod tests {
     fn message_channel_pair() {
         let reactor = tokio::reactor::Core::new().unwrap();
         let (_a, _b) = platform::MessageChannel::pair(&reactor.handle()).unwrap();
+    }
+
+    #[test]
+    fn named_message_channel_pair() {
+        let reactor = tokio::reactor::Core::new().unwrap();
+        let server = platform::NamedMessageChannel::new(&reactor.handle()).unwrap();
+
+        let name = server.name().to_os_string();
+        let client_thread = thread::spawn(move || {
+            let reactor = tokio::reactor::Core::new().unwrap();
+            let _client = platform::NamedMessageChannel::connect(&name, None, &reactor.handle()).unwrap();
+        });
+
+        let _server = server.accept(None).unwrap();
+        client_thread.join().unwrap();
     }
 
     #[test]

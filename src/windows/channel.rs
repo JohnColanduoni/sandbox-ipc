@@ -1,9 +1,10 @@
 use super::Channel;
 
 use std::{io, mem, ptr, process};
+use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use std::os::windows::prelude::*;
-use std::ffi::{OsString};
+use std::ffi::{OsString, OsStr};
 
 use uuid::Uuid;
 use serde::{Serializer, Deserializer};
@@ -174,6 +175,144 @@ impl ChildMessageChannel {
     }
 }
 
+pub struct NamedMessageChannel {
+    name: OsString,
+    server_pipe: WinHandle,
+    overlapped: Box<OVERLAPPED>,
+    tokio_loop: TokioHandle,
+}
+
+impl NamedMessageChannel {
+    pub fn new(tokio: &TokioHandle) -> io::Result<Self> {
+        let pipe_name = format!(r#"\\.\pipe\{}"#, Uuid::new_v4());
+
+        unsafe {
+            let server_pipe = winapi_handle_call! { CreateNamedPipeW(
+                WString::from(&pipe_name).unwrap().as_ptr(),
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                0, 0,
+                0,
+                ptr::null_mut()
+            )}?;
+
+            // Begin connection operation on server half
+            let mut overlapped: Box<OVERLAPPED> = Box::new(mem::zeroed());
+
+            if ConnectNamedPipe(
+                server_pipe.get(),
+                &mut *overlapped
+            ) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            if GetLastError() != ERROR_IO_PENDING {
+                return Err(io::Error::last_os_error());
+            }
+
+            Ok(NamedMessageChannel {
+                name: OsString::from(pipe_name),
+                server_pipe,
+                overlapped,
+                tokio_loop: tokio.clone(),
+            })
+        }
+    }
+
+    pub fn name(&self) -> &OsStr {
+        &self.name
+    }
+
+    pub fn accept(mut self, timeout: Option<Duration>) -> io::Result<MessageChannel> {
+        unsafe {
+            let timeout = if let Some(duration) = timeout {
+                (duration.as_secs() * 1000 + (duration.subsec_nanos() as u64 / (1000 * 1000))) as ULONG
+            } else {
+                INFINITE
+            };
+            let mut bytes: DWORD = 0;
+            winapi_bool_call!(GetOverlappedResultEx(
+                self.server_pipe.get(),
+                &mut *self.overlapped,
+                &mut bytes,
+                timeout,
+                TRUE
+            ))?;
+
+            let mut process_id: ULONG = 0;
+            winapi_bool_call!(GetNamedPipeClientProcessId(
+                self.server_pipe.get(),
+                &mut process_id,
+            ))?;
+
+            let remote_process_handle = winapi_handle_call!(OpenProcess(
+                PROCESS_DUP_HANDLE,
+                FALSE,
+                process_id,
+            ))?;
+
+            let target_state = Arc::new(Mutex::new(HandleTargetState::ClientSentTo(remote_process_handle)));
+
+            Ok(MessageChannel {
+                pipe: NamedPipe::Unregistered { pipe: self.server_pipe, tokio: self.tokio_loop },
+                server: true,
+                target_state,
+            })
+        }
+    }
+
+    pub fn connect<N>(name: N, timeout: Option<Duration>, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> where
+        N: AsRef<OsStr>,
+    {
+        unsafe {
+            let name = WString::from(name.as_ref())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid name for named pipe"))?;
+
+            let timeout = if let Some(duration) = timeout {
+                (duration.as_secs() * 1000 + (duration.subsec_nanos() as u64 / (1000 * 1000))) as DWORD
+            } else {
+                NMPWAIT_WAIT_FOREVER
+            };
+
+            winapi_bool_call!(WaitNamedPipeW(
+                name.as_ptr(),
+                timeout,
+            ))?;
+
+            let client_pipe = winapi_handle_call! { CreateFileW(
+                name.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                ptr::null_mut(),
+                OPEN_EXISTING,
+                SECURITY_IDENTIFICATION | FILE_FLAG_OVERLAPPED,
+                ptr::null_mut()
+            )}?;
+
+            let mut process_id: ULONG = 0;
+            winapi_bool_call!(GetNamedPipeServerProcessId(
+                client_pipe.get(),
+                &mut process_id,
+            ))?;
+
+            let remote_process_handle = winapi_handle_call!(OpenProcess(
+                PROCESS_DUP_HANDLE,
+                FALSE,
+                process_id,
+            ))?;
+
+            let target_state = Arc::new(Mutex::new(HandleTargetState::ServerSentTo(remote_process_handle)));
+
+            Ok(MessageChannel {
+                pipe: NamedPipe::Unregistered { pipe: client_pipe, tokio: tokio_loop.clone() },
+                server: false,
+                target_state,
+            })
+        }
+    }
+}
+
 impl io::Write for MessageChannel {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         self.pipe.write(buffer)
@@ -304,3 +443,4 @@ fn raw_pipe_pair(pipe_type: DWORD) -> io::Result<(WinHandle, WinHandle)> {
 }
 
 const SECURITY_IDENTIFICATION: DWORD = 65536;
+const NMPWAIT_WAIT_FOREVER: DWORD = 0xFFFFFFFF;
