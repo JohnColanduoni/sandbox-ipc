@@ -1,17 +1,11 @@
 use platform::Channel;
 use super::*;
 
-use std::{io, mem, slice, ptr, env, process};
-use std::marker::PhantomData;
+use std::{io, mem, ptr, env, process};
 use std::time::Duration;
-use std::sync::{Arc, Mutex};
-use std::net::Shutdown;
-use std::os::unix::prelude::*;
-use std::os::unix::net::UnixStream;
 use std::ffi::{OsString, OsStr};
 
 use uuid::Uuid;
-use serde::{Serializer, Deserializer};
 use tokio::{AsyncRead, AsyncWrite};
 use tokio::reactor::{PollEvented, Handle as TokioHandle};
 use futures::{Poll, Async};
@@ -58,8 +52,7 @@ impl MessageChannel {
         F: FnOnce(&mut process::Command, &ChildMessageChannel) -> io::Result<process::Child>
     {
         let fd = self.socket.get_ref().0;
-
-        unsafe { clear_cloexec(fd)? }
+        clear_cloexec(fd)?;
 
         let channel = ChildMessageChannel { fd };
 
@@ -74,9 +67,9 @@ pub struct ChildMessageChannel {
 
 impl ChildMessageChannel {
     pub fn into_channel(self, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
-        unsafe { Ok(
+        Ok(
             MessageChannel { socket: PollEvented::new(ScopedFd(self.fd), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
-        )}
+        )
     }
 }
 
@@ -204,7 +197,7 @@ impl NamedMessageChannel {
         &self.name
     }
 
-    pub fn accept(self, timeout: Option<Duration>) -> io::Result<MessageChannel> {
+    pub fn accept(self, _timeout: Option<Duration>) -> io::Result<MessageChannel> {
         // TODO: use timeout
         unsafe {
             if use_seqpacket!() {
@@ -220,7 +213,7 @@ impl NamedMessageChannel {
             } else {
                 let mut buffer = [0u8; 1];
                 let mut cmsg = Cmsg::new(1);
-                cmsg.set_data(&buffer);
+                cmsg.set_data(&mut buffer);
                 if libc::recvmsg(self.socket.0, cmsg.ptr(), 0) < 0 {
                     return Err(io::Error::last_os_error());
                 }
@@ -233,7 +226,7 @@ impl NamedMessageChannel {
         }
     }
 
-    pub fn connect<N>(name: N, timeout: Option<Duration>, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> where
+    pub fn connect<N>(name: N, _timeout: Option<Duration>, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> where
         N: AsRef<OsStr>,
     {
         let name = name.as_ref();

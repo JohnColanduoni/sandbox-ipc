@@ -13,7 +13,6 @@ pub use self::sharedmem::*;
 use self::fd::*;
 
 use std::{io, fs, mem, ptr, slice};
-use std::marker::PhantomData;
 use std::cell::RefCell;
 use std::borrow::Borrow;
 use std::ffi::OsStr;

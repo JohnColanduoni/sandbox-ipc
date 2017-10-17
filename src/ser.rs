@@ -96,7 +96,6 @@ impl<S, T, R, W> Sink for BincodeDatagram<S, T, R, W> where
             }
         }
 
-        let tx_buffer_size = self.tx_buffer.len();
         let mut cursor = io::Cursor::new(&mut self.tx_buffer[..]);
 
         {
@@ -135,8 +134,8 @@ impl<'a, S> SerializeWrapper<'a, S> for NoopWrapper {
     type SerializeGuard = NoopWrapperGuard;
     type DeserializeGuard = NoopWrapperGuard;
 
-    fn before_serialize(io: &'a mut S) -> NoopWrapperGuard { NoopWrapperGuard }
-    fn before_deserialize(io: &'a mut S) -> NoopWrapperGuard { NoopWrapperGuard }
+    fn before_serialize(_io: &'a mut S) -> NoopWrapperGuard { NoopWrapperGuard }
+    fn before_deserialize(_io: &'a mut S) -> NoopWrapperGuard { NoopWrapperGuard }
 }
 
 impl<'a> SerializeWrapperGuard<'a> for NoopWrapperGuard {

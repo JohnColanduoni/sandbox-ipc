@@ -1,5 +1,5 @@
 use ::SharedMemAccess;
-use platform::{ScopedFd, SendableFd};
+use platform::{ScopedFd};
 
 use std::{io, mem, ptr};
 use std::collections::Bound;
@@ -12,7 +12,8 @@ use platform::libc;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SharedMem {
-    fd: ScopedFd,
+    rw_fd: Option<ScopedFd>,
+    ro_fd: ScopedFd,
     size: usize,
 }
 
@@ -47,6 +48,10 @@ impl SharedMem {
             if fd < 0 {
                 return Err(io::Error::last_os_error());
             }
+            let ro_fd = libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0o700);
+            if ro_fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
             if libc::shm_unlink(name.as_ptr()) < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -56,7 +61,8 @@ impl SharedMem {
             }
 
             Ok(SharedMem {
-                fd: ScopedFd(fd),
+                rw_fd: Some(ScopedFd(fd)),
+                ro_fd: ScopedFd(ro_fd),
                 size,
             })
         }
@@ -65,14 +71,36 @@ impl SharedMem {
     pub fn size(&self) -> usize { self.size }
 
     pub fn clone(&self, read_only: bool) -> io::Result<SharedMem> {
-        let fd = unsafe { libc::dup(self.fd.0) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
+        if read_only {
+            let ro_fd = unsafe { libc::dup(self.ro_fd.0) };
+            if ro_fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(SharedMem {
+                rw_fd: None,
+                ro_fd: ScopedFd(ro_fd),
+                size: self.size,
+            })
+        } else {
+            if let Some(rw_fd) = self.rw_fd.as_ref() {
+                let rw_fd = unsafe { libc::dup(rw_fd.0) };
+                if rw_fd < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let ro_fd = unsafe { libc::dup(self.ro_fd.0) };
+                if ro_fd < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+
+                Ok(SharedMem {
+                    rw_fd: Some(ScopedFd(rw_fd)),
+                    ro_fd: ScopedFd(ro_fd),
+                    size: self.size,
+                })
+            } else {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "this shared memory handle is read-only"));
+            }
         }
-        Ok(SharedMem {
-            fd: ScopedFd(fd),
-            size: self.size,
-        })
     }
 
     pub fn map<R>(self, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<Self>> where
@@ -91,9 +119,15 @@ impl SharedMem {
         T: Borrow<SharedMem>,
         R: RangeArgument<usize>,
     {
-        let prot = match access {
-            SharedMemAccess::Read => libc::PROT_READ,
-            SharedMemAccess::ReadWrite => libc::PROT_READ | libc::PROT_WRITE,
+        let (prot, fd) = match access {
+            SharedMemAccess::Read => (libc::PROT_READ, t.borrow().ro_fd.0),
+            SharedMemAccess::ReadWrite => {
+                if let Some(rw_fd) = t.borrow().rw_fd.as_ref() {
+                    (libc::PROT_READ | libc::PROT_WRITE, rw_fd.0)
+                } else {
+                    return Err(io::Error::new(io::ErrorKind::PermissionDenied, "this shared memory handle is read-only"));
+                }
+            },
         };
 
         let offset = match range.start() {
@@ -107,7 +141,7 @@ impl SharedMem {
             Bound::Unbounded => t.borrow().size(),
         };
 
-        let ptr = unsafe { libc::mmap(ptr::null_mut(), len as _, prot, libc::MAP_SHARED, t.borrow().fd.0, offset as _) };
+        let ptr = unsafe { libc::mmap(ptr::null_mut(), len as _, prot, libc::MAP_SHARED, fd, offset as _) };
         if ptr == libc::MAP_FAILED {
             return Err(io::Error::last_os_error());
         }
