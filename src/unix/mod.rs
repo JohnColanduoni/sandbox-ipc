@@ -6,9 +6,11 @@ extern crate mio;
 
 mod channel;
 mod sharedmem;
+mod fd;
 
 pub use self::channel::*;
 pub use self::sharedmem::*;
+use self::fd::*;
 
 use std::{io, fs, mem, ptr, slice};
 use std::marker::PhantomData;
@@ -65,13 +67,13 @@ impl<'de> Deserialize<'de> for SendableFd {
             let receiver = receiver_guard.as_mut()
                 .ok_or_else(|| D::Error::custom("attempted to deserialize file descriptor outside of IPC channel"))?;
             let index = usize::deserialize(deserializer)?;
-            // TODO: check fd
             let fd = receiver.recv(index)
                 .map_err(|err| D::Error::custom(err))?;
             Ok(SendableFd(fd))
         })
     }
 }
+
 
 impl<B> Serialize for SendableFile<B> where
     B: Borrow<fs::File>,

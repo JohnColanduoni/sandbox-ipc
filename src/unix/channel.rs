@@ -16,8 +16,6 @@ use tokio::{AsyncRead, AsyncWrite};
 use tokio::reactor::{PollEvented, Handle as TokioHandle};
 use futures::{Poll, Async};
 use platform::libc;
-use platform::mio::{Evented, Poll as MioPoll, Token, Ready, PollOpt};
-use platform::mio::unix::EventedFd;
 
 macro_rules! use_seqpacket {
     () => { cfg!(not(target_os = "macos")) };
@@ -292,35 +290,5 @@ impl NamedMessageChannel {
                 })
             }
         }
-    }
-}
-
-struct ScopedFd(libc::c_int);
-
-impl Drop for ScopedFd {
-    fn drop(&mut self) {
-        unsafe { libc::close(self.0); }
-    }
-}
-
-impl Evented for ScopedFd {
-    fn register(&self,
-                poll: &MioPoll,
-                token: Token,
-                events: Ready,
-                opts: PollOpt) -> io::Result<()> {
-        EventedFd(&self.0).register(poll, token, events, opts)
-    }
-
-    fn reregister(&self,
-                  poll: &MioPoll,
-                  token: Token,
-                  events: Ready,
-                  opts: PollOpt) -> io::Result<()> {
-        EventedFd(&self.0).reregister(poll, token, events, opts)
-    }
-
-    fn deregister(&self, poll: &MioPoll) -> io::Result<()> {
-        EventedFd(&self.0).deregister(poll)
     }
 }
