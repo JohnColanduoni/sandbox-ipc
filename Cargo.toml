@@ -1,0 +1,35 @@
+[package]
+name = "sandbox-ipc"
+version = "0.1.0"
+
+description = "An IPC implementation with an eye toward enabling privilege separation."
+repository = "https://github.com/JohnColanduoni/sandbox-ipc"
+authors = ["john@colanduoni.com"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+log = ">=0.3"
+uuid = { version = "0.5", features = ["v4"] }
+
+serde = "1.0"
+serde_derive = "1.0"
+bincode = "0.9"
+
+futures = "0.1"
+tokio-core = "0.1"
+tokio-io = "0.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = ">=0.2"
+kernel32-sys = ">=0.2"
+advapi32-sys = ">=0.2"
+winhandle = "0.1"
+mio-named-pipes = "0.1"
+
+[dev-dependencies]
+serde_urlencoded = "0.5"
+futures-await = { git = 'https://github.com/alexcrichton/futures-await' }
+
+[[test]]
+name = "child_channel"
+harness = false
