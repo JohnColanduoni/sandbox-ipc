@@ -29,6 +29,10 @@ pub use io::*;
 #[path = "windows/mod.rs"]
 pub mod platform;
 
+#[cfg(unix)]
+#[path = "unix/mod.rs"]
+pub mod platform;
+
 pub use platform::{SharedMem, SharedMemMap};
 
 pub enum SharedMemAccess {
@@ -57,6 +61,7 @@ mod tests {
         let server = platform::NamedMessageChannel::new(&reactor.handle()).unwrap();
 
         let name = server.name().to_os_string();
+        println!("named socket: {:?}", name);
         let client_thread = thread::spawn(move || {
             let reactor = tokio::reactor::Core::new().unwrap();
             let _client = platform::NamedMessageChannel::connect(&name, None, &reactor.handle()).unwrap();

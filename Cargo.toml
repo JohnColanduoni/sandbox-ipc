@@ -26,6 +26,10 @@ advapi32-sys = ">=0.2"
 winhandle = "0.1"
 mio-named-pipes = "0.1"
 
+[target.'cfg(unix)'.dependencies]
+tokio-uds = "0.1"
+libc = "0.2"
+
 [dev-dependencies]
 serde_urlencoded = "0.5"
 futures-await = { git = 'https://github.com/alexcrichton/futures-await' }
