@@ -12,7 +12,7 @@ pub struct MessageChannel<T, R> where
     T: Serialize,
     R: for<'de> Deserialize<'de>
 {
-    inner: BincodeDatagram<platform::MessageChannel, T, R>
+    inner: BincodeDatagram<platform::MessageChannel, T, R, platform::ChannelSerializeWrapper>
 }
 
 impl<T, R> MessageChannel<T, R> where
@@ -41,7 +41,6 @@ impl<T, R> Stream for MessageChannel<T, R> where
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<R>, io::Error> {
-        let _guard = platform::push_current_channel_deserialize(self.inner.get_ref());
         self.inner.poll()
     }
 }
@@ -54,7 +53,6 @@ impl<T, R> Sink for MessageChannel<T, R> where
     type SinkError = io::Error;
 
     fn start_send(&mut self, item: T) -> StartSend<T, io::Error> {
-        let _guard = platform::push_current_channel_serialize(self.inner.get_ref());
         self.inner.start_send(item)
     }
 

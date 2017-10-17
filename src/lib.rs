@@ -74,11 +74,12 @@ mod tests {
     #[test]
     fn send_file_same_process() {
         let mut reactor = tokio::reactor::Core::new().unwrap();
-        let (a, b) = MessageChannel::pair(&reactor.handle(), 8192).unwrap();
+        let (a, b) = MessageChannel::<SendableFile, SendableFile>::pair(&reactor.handle(), 8192).unwrap();
 
         let mut file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(true)
             .open(env::temp_dir().join("some_test_file.txt")).unwrap();
         write!(file, "hello").unwrap();
+        file.flush().unwrap();
 
         let _a = reactor.run(a.send(SendableFile(file))).unwrap();
         let (message, _b) = reactor.run(b.into_future()).map_err(|(err, _)| err).unwrap();

@@ -22,8 +22,11 @@ macro_rules! use_seqpacket {
     () => { cfg!(not(target_os = "macos")) };
 }
 
+pub(crate) const MAX_MSG_FDS: usize = 32;
+
 pub struct MessageChannel {
     socket: TokioUnixStream,
+    cmsg: Cmsg,
 }
 
 impl MessageChannel {
@@ -46,8 +49,8 @@ impl MessageChannel {
             }
 
             Ok((
-                MessageChannel { socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(sockets[0]), tokio_loop)? },
-                MessageChannel { socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(sockets[1]), tokio_loop)? },
+                MessageChannel { socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(sockets[0]), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
+                MessageChannel { socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(sockets[1]), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
             ))
         }
     }
@@ -73,17 +76,32 @@ pub struct ChildMessageChannel {
 impl ChildMessageChannel {
     pub fn into_channel(self, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
         unsafe { Ok(
-            MessageChannel { socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(self.fd), tokio_loop)? },
+            MessageChannel { socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(self.fd), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
         )}
     }
 }
 
 impl Channel for MessageChannel {
+    fn cmsg(&mut self) -> &mut Cmsg {
+        &mut self.cmsg
+    }
 }
 
 impl io::Write for MessageChannel {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.socket.write(buffer)
+        if let Async::Ready(()) = self.socket.poll_write() {
+            unsafe { 
+                self.cmsg.set_data(buffer);
+                let result = libc::sendmsg(self.socket.as_raw_fd(), self.cmsg.ptr(), 0);
+                if result >= 0 {
+                    Ok(result as usize)
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            }
+        } else {
+            Err(io::ErrorKind::WouldBlock.into())
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -100,7 +118,20 @@ impl AsyncWrite for MessageChannel {
 
 impl io::Read for MessageChannel {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.socket.read(buffer)
+        if let Async::Ready(()) = self.socket.poll_read() {
+            unsafe { 
+                self.cmsg.set_data(buffer);
+                self.cmsg.reset_fd_count();
+                let result = libc::recvmsg(self.socket.as_raw_fd(), self.cmsg.ptr(), 0);
+                if result >= 0 {
+                    Ok(result as usize)
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            }
+        } else {
+            Err(io::ErrorKind::WouldBlock.into())
+        }
     }
 }
 
@@ -179,10 +210,12 @@ impl NamedMessageChannel {
 
                 Ok(MessageChannel {
                     socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(socket), &self.tokio_loop)?,
+                    cmsg: Cmsg::new(MAX_MSG_FDS),
                 })
             } else {
                 let mut buffer = [0u8; 1];
-                let mut cmsg = Cmsg::new_recv(1, &mut buffer[..]);
+                let mut cmsg = Cmsg::new(1);
+                cmsg.set_data(&buffer);
                 if libc::recvmsg(self.socket, cmsg.ptr(), 0) < 0 {
                     return Err(io::Error::last_os_error());
                 }
@@ -190,6 +223,7 @@ impl NamedMessageChannel {
 
                 Ok(MessageChannel {
                     socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(cmsg.fds()[0]), &self.tokio_loop)?,
+                    cmsg: Cmsg::new(MAX_MSG_FDS),
                 })
             }
         }
@@ -213,6 +247,7 @@ impl NamedMessageChannel {
 
                 Ok(MessageChannel {
                     socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(socket), tokio_loop)?,
+                    cmsg: Cmsg::new(MAX_MSG_FDS),
                 })
             } else {
                 let init_socket = libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0);
@@ -231,8 +266,9 @@ impl NamedMessageChannel {
                     set_cloexec(socket)?;
                 }
 
-                let mut cmsg = Cmsg::new_send(&[sockets[1]], &[0u8]);
-
+                let mut cmsg = Cmsg::new(1);
+                cmsg.set_fds(&[sockets[1]]);
+                cmsg.set_data(&[0u8]);
                 if libc::sendmsg(init_socket, cmsg.ptr(), 0) < 0 {
                     return Err(io::Error::last_os_error());
                 }
@@ -240,137 +276,9 @@ impl NamedMessageChannel {
 
                 Ok(MessageChannel {
                     socket: TokioUnixStream::from_stream(UnixStream::from_raw_fd(sockets[0]), tokio_loop)?,
+                    cmsg: Cmsg::new(MAX_MSG_FDS),
                 })
             }
         }
-    }
-}
-
-fn set_cloexec(fd: libc::c_int) -> io::Result<()> {
-    unsafe {
-        let old_flags = libc::fcntl(fd, libc::F_GETFD, 0);
-        if libc::fcntl(fd, libc::F_SETFD, old_flags | libc::FD_CLOEXEC) == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-}
-
-fn clear_cloexec(fd: libc::c_int) -> io::Result<()> {
-    unsafe {
-        let old_flags = libc::fcntl(fd, libc::F_GETFD, 0);
-        if libc::fcntl(fd, libc::F_SETFD, old_flags & !libc::FD_CLOEXEC) == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-}
-
-fn sockaddr_un(path: &OsStr) -> libc::sockaddr_un {
-    unsafe {
-        let mut addr: libc::sockaddr_un = mem::zeroed();
-        addr.sun_family = libc::AF_UNIX as _;
-        assert!(path.len() < addr.sun_path.len(), "path too long for sockaddr_un");
-        addr.sun_path[..path.len()].copy_from_slice(mem::transmute(path.as_bytes()));
-
-        addr
-    }
-}
-
-#[allow(non_snake_case)]
-fn CMSG_LEN(length: libc::size_t) -> libc::size_t {
-    CMSG_ALIGN(mem::size_of::<libc::cmsghdr>()) + length
-}
-
-#[allow(non_snake_case)]
-unsafe fn CMSG_DATA(cmsg: *mut libc::cmsghdr) -> *mut libc::c_void {
-    (cmsg as *mut libc::c_uchar).offset(CMSG_ALIGN(
-            mem::size_of::<libc::cmsghdr>()) as isize) as *mut libc::c_void
-}
-
-#[allow(non_snake_case)]
-fn CMSG_ALIGN(length: libc::size_t) -> libc::size_t {
-    (length + mem::size_of::<libc::size_t>() - 1) & !(mem::size_of::<libc::size_t>() - 1)
-}
-
-#[allow(non_snake_case)]
-fn CMSG_SPACE(length: libc::size_t) -> libc::size_t {
-    CMSG_ALIGN(length) + CMSG_ALIGN(mem::size_of::<libc::cmsghdr>())
-}
-
-struct Cmsg<'a> {
-    msg_hdr: libc::msghdr,
-    buffer: Vec<u8>,
-    iovec: Box<libc::iovec>,
-    sockaddr: Option<Box<libc::sockaddr_un>>,
-    fd_count: usize,
-    _phantom: PhantomData<&'a [u8]>,
-}
-
-impl<'a> Cmsg<'a> {
-    fn new_send(fds: &[libc::c_int], data: &'a [u8]) -> Self {
-        unsafe {
-            let fd_payload_size = mem::size_of::<libc::c_int>() * fds.len();
-            let mut buffer = vec![0u8; CMSG_SPACE(fd_payload_size)];
-            let mut iovec: Box<libc::iovec> = Box::new(mem::zeroed());
-
-            iovec.iov_base = data.as_ptr() as *mut u8 as *mut libc::c_void;
-            iovec.iov_len = data.len() as _;
-
-            let cmsg_hdr = &mut *(buffer.as_mut_ptr() as *mut libc::cmsghdr);
-            cmsg_hdr.cmsg_len = CMSG_LEN(fd_payload_size as _) as _;
-            cmsg_hdr.cmsg_level = libc::SOL_SOCKET;
-            cmsg_hdr.cmsg_type = libc::SCM_RIGHTS;
-
-            let mut msg_hdr: libc::msghdr = mem::zeroed();
-            msg_hdr.msg_name = ptr::null_mut();
-            msg_hdr.msg_namelen = 0;
-            msg_hdr.msg_iov = &mut *iovec;
-            msg_hdr.msg_iovlen = 1;
-            msg_hdr.msg_control = cmsg_hdr as *mut _ as *mut libc::c_void;
-            msg_hdr.msg_controllen = cmsg_hdr.cmsg_len;
-            msg_hdr.msg_flags = 0;
-
-            let fds_target = slice::from_raw_parts_mut(CMSG_DATA(cmsg_hdr) as *mut libc::c_int, fds.len());
-            fds_target.copy_from_slice(fds);
-
-            Cmsg { msg_hdr, buffer, iovec, sockaddr: None, fd_count: fds.len(), _phantom: PhantomData }
-        }
-    }
-
-    fn new_recv(fd_count: usize, data: &'a mut [u8]) -> Self {
-        unsafe {
-            let fd_payload_size = mem::size_of::<libc::c_int>() * fd_count;
-            let mut buffer = vec![0u8; CMSG_SPACE(fd_payload_size)];
-            let mut iovec: Box<libc::iovec> = Box::new(mem::zeroed());
-            let mut sockaddr: Box<libc::sockaddr_un> = Box::new(mem::zeroed());
-
-            iovec.iov_base = data.as_ptr() as *mut u8 as *mut libc::c_void;
-            iovec.iov_len = data.len() as _;
-
-            let cmsg_hdr = &mut *(buffer.as_mut_ptr() as *mut libc::cmsghdr);
-            cmsg_hdr.cmsg_len = CMSG_LEN(fd_payload_size as _) as _;
-            cmsg_hdr.cmsg_level = libc::SOL_SOCKET;
-            cmsg_hdr.cmsg_type = libc::SCM_RIGHTS;
-
-            let mut msg_hdr: libc::msghdr = mem::zeroed();
-            msg_hdr.msg_name = &mut *sockaddr as *mut libc::sockaddr_un as _;
-            msg_hdr.msg_namelen = mem::size_of::<libc::sockaddr_un>() as _;
-            msg_hdr.msg_iov = &mut *iovec;
-            msg_hdr.msg_iovlen = 1;
-            msg_hdr.msg_control = cmsg_hdr as *mut _ as *mut libc::c_void;
-            msg_hdr.msg_controllen = cmsg_hdr.cmsg_len;
-            msg_hdr.msg_flags = 0;
-
-            Cmsg { msg_hdr, buffer, iovec, sockaddr: Some(sockaddr), fd_count, _phantom: PhantomData }
-        }
-    }
-
-    unsafe fn ptr(&mut self) -> *mut libc::msghdr {
-        &mut self.msg_hdr
-    }
-
-    fn fds(&self) -> &[libc::c_int] {
-        unsafe { slice::from_raw_parts(CMSG_DATA(self.buffer.as_ptr() as _) as *mut libc::c_int, self.fd_count) }
     }
 }

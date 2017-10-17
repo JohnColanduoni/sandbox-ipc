@@ -66,6 +66,7 @@ pub fn run_child(channel: OsMessageChannel) -> io::Result<()> {
 
     // Read a file for parent
     let (message, channel) = await!(channel.into_future()).map_err(|(err, _)| err)?;
+    panic!();
     let channel = if let Some(Message::ReadAFile(SendableFile(mut file))) = message {
         let mut data = String::new();
         file.read_to_string(&mut data)?;

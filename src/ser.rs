@@ -6,22 +6,36 @@ use bincode;
 use futures::{Stream, Sink, Poll, Async, AsyncSink, StartSend};
 use tokio::{AsyncRead, AsyncWrite};
 
-pub struct BincodeDatagram<S, T, R> where
+pub struct BincodeDatagram<S, T, R, W = NoopWrapper> where
     S: AsyncRead + AsyncWrite,
     T: Serialize,
-    R: for<'de> Deserialize<'de>
+    R: for<'de> Deserialize<'de>,
+    W: for<'a> SerializeWrapper<'a, S>,
 {
     io: S,
     rx_buffer: Vec<u8>,
     tx_buffer: Vec<u8>,
     buffered_send: Option<usize>,
-    _phantom: PhantomData<(T, R)>,
+    _phantom: PhantomData<(T, R, W)>,
 }
 
-impl<S, T, R> BincodeDatagram<S, T, R> where
+pub trait SerializeWrapper<'a, S> {
+    type SerializeGuard: SerializeWrapperGuard<'a> + 'a;
+    type DeserializeGuard: SerializeWrapperGuard<'a> + 'a;
+
+    fn before_serialize(io: &'a mut S) -> Self::SerializeGuard;
+    fn before_deserialize(io: &'a mut S) -> Self::DeserializeGuard;
+}
+
+pub trait SerializeWrapperGuard<'a> {
+    fn commit(self);
+}
+
+impl<S, T, R, W> BincodeDatagram<S, T, R, W> where
     S: AsyncRead + AsyncWrite,
     T: Serialize,
     R: for<'de> Deserialize<'de>,
+    W: for<'a> SerializeWrapper<'a, S>,
 {
     pub fn wrap(io: S, buffer_size: usize) -> Self {
         BincodeDatagram {
@@ -37,10 +51,11 @@ impl<S, T, R> BincodeDatagram<S, T, R> where
     pub fn get_mut(&mut self) -> &mut S { &mut self.io }
 }
 
-impl<S, T, R> Stream for BincodeDatagram<S, T, R> where
+impl<S, T, R, W> Stream for BincodeDatagram<S, T, R, W> where
     S: AsyncRead + AsyncWrite,
     T: Serialize,
     R: for<'de> Deserialize<'de>,
+    W: for<'a> SerializeWrapper<'a, S>,
 {
     type Item = R;
     type Error = io::Error;
@@ -52,17 +67,23 @@ impl<S, T, R> Stream for BincodeDatagram<S, T, R> where
             return Ok(Async::Ready(None));
         }
 
-        let message = bincode::deserialize(&self.rx_buffer[0..message_size])
-            .map_err(|x| io::Error::new(io::ErrorKind::InvalidData, x))?;
+        let message;
+        {
+            let guard = W::before_deserialize(&mut self.io);
+            message = bincode::deserialize(&self.rx_buffer[0..message_size])
+                .map_err(|x| io::Error::new(io::ErrorKind::InvalidData, x))?;
+            guard.commit();
+        };
 
         Ok(Async::Ready(Some(message)))
     }
 }
 
-impl<S, T, R> Sink for BincodeDatagram<S, T, R> where
+impl<S, T, R, W> Sink for BincodeDatagram<S, T, R, W> where
     S: AsyncRead + AsyncWrite,
     T: Serialize,
     R: for<'de> Deserialize<'de>,
+    W: for<'a> SerializeWrapper<'a, S>,
 {
     type SinkItem = T;
     type SinkError = io::Error;
@@ -77,8 +98,13 @@ impl<S, T, R> Sink for BincodeDatagram<S, T, R> where
 
         let tx_buffer_size = self.tx_buffer.len();
         let mut cursor = io::Cursor::new(&mut self.tx_buffer[..]);
-        bincode::serialize_into(&mut cursor, &item, bincode::Bounded(tx_buffer_size as u64))
-            .map_err(|x| io::Error::new(io::ErrorKind::InvalidInput, x))?;
+
+        {
+            let guard = W::before_serialize(&mut self.io);
+            bincode::serialize_into(&mut cursor, &item, bincode::Infinite)
+                .map_err(|x| io::Error::new(io::ErrorKind::InvalidInput, x))?;
+            guard.commit();
+        }
         
         self.buffered_send = Some(cursor.position() as usize);
 
@@ -100,4 +126,19 @@ impl<S, T, R> Sink for BincodeDatagram<S, T, R> where
             Ok(Async::Ready(()))
         }
     }
+}
+
+pub struct NoopWrapper;
+pub struct NoopWrapperGuard;
+
+impl<'a, S> SerializeWrapper<'a, S> for NoopWrapper {
+    type SerializeGuard = NoopWrapperGuard;
+    type DeserializeGuard = NoopWrapperGuard;
+
+    fn before_serialize(io: &'a mut S) -> NoopWrapperGuard { NoopWrapperGuard }
+    fn before_deserialize(io: &'a mut S) -> NoopWrapperGuard { NoopWrapperGuard }
+}
+
+impl<'a> SerializeWrapperGuard<'a> for NoopWrapperGuard {
+    fn commit(self) {}
 }
