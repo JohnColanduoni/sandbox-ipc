@@ -26,7 +26,7 @@ mod io;
 pub use io::*;
 
 #[cfg(target_os = "windows")]
-#[path = "windows.rs"]
+#[path = "windows/mod.rs"]
 pub mod platform;
 
 pub use platform::{SharedMem, SharedMemMap};

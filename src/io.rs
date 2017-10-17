@@ -5,7 +5,7 @@ use std::ops::Deref;
 use std::io::Read;
 
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
-use futures::{Future, Stream, Sink, Poll, StartSend};
+use futures::{Stream, Sink, Poll, StartSend};
 use tokio::reactor::{Handle as TokioHandle};
 
 pub struct MessageChannel<T, R> where
