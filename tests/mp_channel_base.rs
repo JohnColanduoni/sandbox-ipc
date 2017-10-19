@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use sandbox_ipc::{MessageChannel, SendableFile, Mutex as IpcMutex, MutexHandle as IpcMutexHandle};
 use sandbox_ipc::{SharedMem, SharedMemAccess, MUTEX_SHM_SIZE};
-use sandbox_ipc::platform::{MessageChannel as OsMessageChannel};
 use futures::prelude::*;
 use tokio_core::reactor::{Core as TokioLoop};
 
@@ -31,9 +30,7 @@ macro_rules! await {
     };
 }
 
-pub fn run_parent(mut tokio_loop: TokioLoop, channel: OsMessageChannel) {
-    let channel = MessageChannel::<Message, Message>::from_os(channel, 8192).unwrap();
-
+pub fn run_parent(mut tokio_loop: TokioLoop, channel: MessageChannel<Message, Message>) {
     let channel = await!(tokio_loop => channel.send(Message::Hello));
     println!("parent sent hello");
     let (message, channel) = await!(tokio_loop => channel.into_future().map_err(|(err, _)| err));
@@ -93,9 +90,7 @@ pub fn run_parent(mut tokio_loop: TokioLoop, channel: OsMessageChannel) {
     }
 }
 
-pub fn run_child(mut tokio_loop: TokioLoop, channel: OsMessageChannel) {
-    let channel = MessageChannel::<Message, Message>::from_os(channel, 8192).unwrap();
-
+pub fn run_child(mut tokio_loop: TokioLoop, channel: MessageChannel<Message, Message>) {
     let (message, channel) = await!(tokio_loop => channel.into_future().map_err(|(err, _)| err));
     if let Some(Message::Hello) = message { } else {
         panic!("expected Hello, got {:?}", message);

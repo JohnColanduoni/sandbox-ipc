@@ -1,6 +1,7 @@
 use super::Channel;
 
 use std::{io, mem, ptr, process};
+use std::marker::PhantomData;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use std::os::windows::prelude::*;
@@ -94,6 +95,7 @@ impl MessageChannel {
             channel_handle: inheritable_pipe,
             remote_process_handle: inheritable_process_handle,
             server: self.server,
+            _phantom: PhantomData,
         };
 
         let child = transmit_and_launch(command, &to_be_sent)?;

@@ -46,6 +46,8 @@ impl<S, T, R, W> BincodeDatagram<S, T, R, W> where
             _phantom: PhantomData,
         }
     }
+
+    pub fn into_inner(self) -> S { self.io }
 }
 
 impl<S, T, R, W> Stream for BincodeDatagram<S, T, R, W> where

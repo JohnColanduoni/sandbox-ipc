@@ -49,14 +49,14 @@ impl MessageChannel {
     }
 
     pub fn send_to_child<F>(self, command: &mut process::Command, transmit_and_launch: F) -> io::Result<process::Child> where
-        F: FnOnce(&mut process::Command, &ChildMessageChannel) -> io::Result<process::Child>
+        F: FnOnce(&mut process::Command, ChildMessageChannel) -> io::Result<process::Child>
     {
         let fd = self.socket.get_ref().0;
         clear_cloexec(fd)?;
 
         let channel = ChildMessageChannel { fd };
 
-        transmit_and_launch(command, &channel)
+        transmit_and_launch(command, channel)
     }
 }
 
