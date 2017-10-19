@@ -23,6 +23,8 @@ pub struct SharedMemMap<T = SharedMem> where
     mem: T,
     pointer: *mut u8,
     len: usize,
+    access: SharedMemAccess,
+    pointer_offset: usize,
 }
 
 impl<T> Drop for SharedMemMap<T> where
@@ -86,7 +88,7 @@ impl SharedMem {
         T: Borrow<SharedMem>,
         R: RangeArgument<usize>,
     {
-        let access = match access {
+        let raw_access = match access {
             SharedMemAccess::Read => FILE_MAP_READ,
             SharedMemAccess::ReadWrite => FILE_MAP_WRITE,
         };
@@ -105,7 +107,7 @@ impl SharedMem {
         unsafe {
             let addr = MapViewOfFile(
                 t.borrow().handle.get(),
-                access,
+                raw_access,
                 (offset >> 32) as DWORD,
                 (offset & 0xFFFFFFFF) as DWORD,
                 len as SIZE_T
@@ -117,7 +119,9 @@ impl SharedMem {
             Ok(SharedMemMap {
                 mem: t,
                 pointer: addr as _,
-                len
+                len,
+                access,
+                pointer_offset: offset,
             })
         }
     }
@@ -143,6 +147,8 @@ impl<T> SharedMemMap<T> where
 
     pub unsafe fn pointer(&self) -> *mut u8 { self.pointer }
     pub fn len(&self) -> usize { self.len }
+    pub fn access(&self) -> SharedMemAccess { self.access }
+    pub fn offset(&self) -> usize { self.pointer_offset }
 }
 
 impl Serialize for SharedMem {

@@ -8,9 +8,11 @@ extern crate advapi32;
 
 mod channel;
 mod sharedmem;
+mod sync;
 
 pub use self::channel::*;
 pub use self::sharedmem::*;
+pub(crate) use self::sync::*;
 
 use std::{io, fs, mem, ptr};
 use std::cell::RefCell;

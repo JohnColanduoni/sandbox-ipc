@@ -19,9 +19,13 @@ extern crate futures;
 #[cfg(target_os = "windows")]
 #[macro_use] extern crate winhandle;
 
-mod ser;
 mod io;
+mod sync;
+
+mod ser;
+
 pub use io::*;
+pub use sync::*;
 
 #[cfg(target_os = "windows")]
 #[path = "windows/mod.rs"]
@@ -33,6 +37,7 @@ pub mod platform;
 
 pub use platform::{SharedMem, SharedMemMap};
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum SharedMemAccess {
     Read,
     ReadWrite,
