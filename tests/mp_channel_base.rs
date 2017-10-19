@@ -1,7 +1,11 @@
-use std::{fs, env};
+use std::{mem, fs, env, thread};
 use std::io::{Read, Write, Seek, SeekFrom};
+use std::sync::Arc;
+use std::sync::atomic::{Ordering, AtomicBool};
+use std::time::Duration;
 
-use sandbox_ipc::{MessageChannel, SendableFile};
+use sandbox_ipc::{MessageChannel, SendableFile, Mutex as IpcMutex, MutexHandle as IpcMutexHandle};
+use sandbox_ipc::{SharedMem, SharedMemAccess, MUTEX_SHM_SIZE};
 use sandbox_ipc::platform::{MessageChannel as OsMessageChannel};
 use futures::prelude::*;
 use tokio_core::reactor::{Core as TokioLoop};
@@ -13,6 +17,9 @@ pub enum Message {
 
     ReadAFile(SendableFile),
     FileSaidThis(String),
+
+    HaveAMutex(SharedMem, IpcMutexHandle),
+    WroteToSharedMem,
 }
 
 const STRING_WRITTEN_TO_FILE: &str = "this is in a file";
@@ -51,7 +58,7 @@ pub fn run_parent(mut tokio_loop: TokioLoop, channel: OsMessageChannel) {
 
     // Read a file for child
     let (message, channel) = await!(tokio_loop => channel.into_future().map_err(|(err, _)| err));
-    let _channel = if let Some(Message::ReadAFile(SendableFile(mut file))) = message {
+    let channel = if let Some(Message::ReadAFile(SendableFile(mut file))) = message {
         println!("parent received file handle");
         file.seek(SeekFrom::Start(0)).unwrap();
         let mut data = String::new();
@@ -61,6 +68,29 @@ pub fn run_parent(mut tokio_loop: TokioLoop, channel: OsMessageChannel) {
         panic!("expected ReadAFile, got {:?}", message);
     };
     println!("parent sent file contents");
+
+    // Create a shared mutex
+    let memory = SharedMem::new(4096).unwrap();
+    let memory_map = memory.map_ref(.., SharedMemAccess::ReadWrite).unwrap();
+    let shared_mem = unsafe {
+        &*(memory_map.pointer().offset(MUTEX_SHM_SIZE as isize) as *const AtomicBool)
+    };
+    let mutex = unsafe { IpcMutex::new_with_memory(memory_map, 0) }.unwrap();
+
+    shared_mem.store(false, Ordering::SeqCst);
+    let guard = mutex.lock();
+    let channel = await!(tokio_loop => channel.send(Message::HaveAMutex(memory.clone(false).unwrap(), mutex.handle().unwrap())));
+    println!("parent sent mutex");
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(false, shared_mem.load(Ordering::SeqCst));
+    mem::drop(guard);
+    let (message, _channel) = await!(tokio_loop => channel.into_future().map_err(|(err, _)| err));
+    if let Some(Message::WroteToSharedMem) = message {
+        println!("received shared memory write ack");
+        assert_eq!(true, shared_mem.load(Ordering::SeqCst));
+    } else {
+        panic!("expected WroteToSharedMem, got {:?}", message);
+    }
 }
 
 pub fn run_child(mut tokio_loop: TokioLoop, channel: OsMessageChannel) {
@@ -93,11 +123,29 @@ pub fn run_child(mut tokio_loop: TokioLoop, channel: OsMessageChannel) {
     write!(file, "{}", STRING_WRITTEN_TO_FILE2).unwrap();
     let channel = await!(tokio_loop => channel.send(Message::ReadAFile(file.into())));
     println!("child sent file handle");
-    let (message, _channel) = await!(tokio_loop => channel.into_future().map_err(|(err, _)| err));
+    let (message, channel) = await!(tokio_loop => channel.into_future().map_err(|(err, _)| err));
     if let Some(Message::FileSaidThis(data)) = message {
         println!("child received file contents");
         assert_eq!(STRING_WRITTEN_TO_FILE2, data);
     } else {
         panic!("expected FileSaidThis, got {:?}", message);
     }
+
+    // Interact with a mutex from the parent
+    let (message, channel) = await!(tokio_loop => channel.into_future().map_err(|(err, _)| err));
+    let _channel = if let Some(Message::HaveAMutex(memory, mutex)) = message {
+        println!("child received mutex");
+        let memory_map = Arc::new(memory.map_ref(.., SharedMemAccess::ReadWrite).unwrap());
+        let mutex = IpcMutex::from_handle(mutex, memory_map.clone()).unwrap();
+        let shared_mem = unsafe {
+            &*(memory_map.pointer().offset(MUTEX_SHM_SIZE as isize) as *const AtomicBool)
+        };
+
+        let _guard = mutex.lock();
+        shared_mem.store(true, Ordering::SeqCst);
+        await!(tokio_loop => channel.send(Message::WroteToSharedMem))
+    } else {
+        panic!("expected HaveAMutex, got {:?}", message);
+    };
+    println!("child send shared memory write ack");
 }

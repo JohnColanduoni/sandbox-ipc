@@ -11,22 +11,24 @@ use uuid::Uuid;
 use platform::libc;
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct SharedMem {
+pub(crate) struct SharedMem {
     rw_fd: Option<ScopedFd>,
     ro_fd: ScopedFd,
     size: usize,
 }
 
-pub struct SharedMemMap<T = SharedMem> where
-    T: Borrow<SharedMem>
+pub(crate) struct SharedMemMap<T = SharedMem> where
+    T: Borrow<::SharedMem>
 {
     mem: T,
     pointer: *mut u8,
     len: usize,
+    pointer_offset: usize,
+    access: SharedMemAccess,
 }
 
 impl<T> Drop for SharedMemMap<T> where
-    T: Borrow<SharedMem>,
+    T: Borrow<::SharedMem>,
 {
     fn drop(&mut self) {
         unsafe {
@@ -103,26 +105,14 @@ impl SharedMem {
         }
     }
 
-    pub fn map<R>(self, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<Self>> where
-        R: RangeArgument<usize>,
-    {
-        Self::map_with(self, range, access)
-    }
-
-    pub fn map_ref<R>(&self, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<&Self>> where
-        R: RangeArgument<usize>,
-    {
-        Self::map_with(self, range, access)
-    }
-
     pub fn map_with<T, R>(t: T, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<T>> where
-        T: Borrow<SharedMem>,
+        T: Borrow<::SharedMem>,
         R: RangeArgument<usize>,
     {
         let (prot, fd) = match access {
-            SharedMemAccess::Read => (libc::PROT_READ, t.borrow().ro_fd.0),
+            SharedMemAccess::Read => (libc::PROT_READ, t.borrow().inner.ro_fd.0),
             SharedMemAccess::ReadWrite => {
-                if let Some(rw_fd) = t.borrow().rw_fd.as_ref() {
+                if let Some(rw_fd) = t.borrow().inner.rw_fd.as_ref() {
                     (libc::PROT_READ | libc::PROT_WRITE, rw_fd.0)
                 } else {
                     return Err(io::Error::new(io::ErrorKind::PermissionDenied, "this shared memory handle is read-only"));
@@ -150,12 +140,14 @@ impl SharedMem {
             mem: t,
             pointer: ptr as *mut u8,
             len: len,
+            pointer_offset: offset,
+            access,
         })
     }
 }
 
 impl<T> SharedMemMap<T> where
-    T: Borrow<SharedMem>,
+    T: Borrow<::SharedMem>,
 {
     pub fn unmap(self) -> io::Result<T> {
         unsafe {
@@ -173,4 +165,6 @@ impl<T> SharedMemMap<T> where
 
     pub unsafe fn pointer(&self) -> *mut u8 { self.pointer }
     pub fn len(&self) -> usize { self.len }
+    pub fn access(&self) -> SharedMemAccess { self.access }
+    pub fn offset(&self) -> usize { self.pointer_offset }
 }

@@ -6,10 +6,12 @@ extern crate mio;
 
 mod channel;
 mod sharedmem;
+mod sync;
 mod fd;
 
 pub use self::channel::*;
-pub use self::sharedmem::*;
+pub(crate) use self::sharedmem::*;
+pub(crate) use self::sync::*;
 use self::fd::*;
 
 use std::{io, fs, mem, ptr, slice};

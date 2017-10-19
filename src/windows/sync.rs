@@ -75,11 +75,10 @@ impl<B, C> Mutex<B, C> where
         assert!(memory.borrow().len() >= offset + MUTEX_SHM_SIZE, "insufficient space for mutex");
         assert!((memory.borrow().pointer() as usize + offset) % mem::size_of::<usize>() == 0, "shared memory for IPC mutex must be aligned");
         let atomic = memory.borrow().pointer().offset(offset as isize) as *const AtomicUsize;
-        let raw_offset = memory.borrow().offset() + offset;
 
         Ok(Mutex {
             _mem: memory,
-            raw_offset,
+            raw_offset: handle.raw_offset,
             atomic,
             event: handle.event.0,
             _phantom: PhantomData,
@@ -181,7 +180,7 @@ impl<'a, B, C> Drop for MutexGuard<'a, B, C> where
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct MutexHandle {
     event: SendableWinHandle,
     raw_offset: usize,

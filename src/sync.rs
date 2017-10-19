@@ -104,7 +104,7 @@ impl<'a, B, C> Drop for MutexGuard<'a, B, C> where
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct MutexHandle {
     inner: platform::MutexHandle,
 }
@@ -134,6 +134,7 @@ mod tests {
     #[test]
     fn single_process_contested_mutex_lock() {
         let barrier = Arc::new(Barrier::new(2));
+        let value = Arc::new(AtomicBool::new(false));
 
         let memory = Arc::new(SharedMem::new(MUTEX_SHM_SIZE).unwrap());
         let memory_map = SharedMem::map_with(memory.clone(), .., SharedMemAccess::ReadWrite).unwrap();
@@ -143,16 +144,20 @@ mod tests {
         let thread = thread::spawn({
             let barrier = barrier.clone();
             let handle = mutex.handle().unwrap();
+            let value = value.clone();
             move || {
                 let memory_map = SharedMem::map_with(memory.clone(), .., SharedMemAccess::ReadWrite).unwrap();
                 let mutex = Mutex::from_handle(handle, memory_map).unwrap();
                 barrier.wait();
                 let _guard = mutex.lock().unwrap();
+                value.store(true, Ordering::SeqCst);
             }
         });
         barrier.wait();
         thread::sleep(Duration::from_millis(100));
+        assert!(!value.load(Ordering::SeqCst));
         mem::drop(guard);
         thread.join().unwrap();
+        assert!(value.load(Ordering::SeqCst));
     }
 }

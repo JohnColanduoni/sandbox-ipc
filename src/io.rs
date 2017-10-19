@@ -186,3 +186,34 @@ impl Deref for SendableDataSourceBytes {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::{fs, env};
+    use std::io::{Write, Read, Seek, SeekFrom};
+
+    use futures::{Sink, Stream};
+
+    #[test]
+    fn send_file_same_process() {
+        let mut reactor = tokio::reactor::Core::new().unwrap();
+        let (a, b) = MessageChannel::<SendableFile, SendableFile>::pair(&reactor.handle(), 8192).unwrap();
+
+        let mut file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(true)
+            .open(env::temp_dir().join("some_test_file.txt")).unwrap();
+        write!(file, "hello").unwrap();
+        file.flush().unwrap();
+
+        let _a = reactor.run(a.send(SendableFile(file))).unwrap();
+        let (message, _b) = reactor.run(b.into_future()).map_err(|(err, _)| err).unwrap();
+        let SendableFile(mut file) = message.unwrap();
+
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut buffer = String::new();
+        file.read_to_string(&mut buffer).unwrap();
+
+        assert_eq!("hello", buffer);
+    }
+}

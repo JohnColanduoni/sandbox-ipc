@@ -72,18 +72,6 @@ impl SharedMem {
         }
     }
 
-    pub fn map<R>(self, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<Self>> where
-        R: RangeArgument<usize>,
-    {
-        Self::map_with(self, range, access)
-    }
-
-    pub fn map_ref<R>(&self, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<&Self>> where
-        R: RangeArgument<usize>,
-    {
-        Self::map_with(self, range, access)
-    }
-
     pub fn map_with<T, R>(t: T, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<T>> where
         T: Borrow<SharedMem>,
         R: RangeArgument<usize>,
