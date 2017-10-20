@@ -23,12 +23,14 @@ extern crate futures;
 mod io;
 mod sync;
 mod shm;
+mod shm_queue;
 
 mod ser;
 
 pub use io::*;
 pub use sync::*;
 pub use shm::*;
+pub use shm_queue::*;
 
 #[cfg(target_os = "windows")]
 #[path = "windows/mod.rs"]
@@ -43,6 +45,17 @@ pub enum SharedMemAccess {
     Read,
     ReadWrite,
 }
+
+#[inline]
+fn align(x: usize, y: usize) -> usize {
+    if x > 0 && y > 0 {
+        (x + (y - 1)) & !(y - 1)
+    } else {
+        0
+    }
+}
+
+const CACHE_LINE: usize = 64;
 
 #[cfg(test)]
 mod tests {
