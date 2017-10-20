@@ -13,6 +13,7 @@ pub struct SharedMemQueue<B = SharedMemMap<SharedMem>, C = SharedMem> where
     C: Borrow<SharedMem>,
 {
     _mem: B,
+    raw_offset: usize,
     control: *const SharedMemQueueCtrl,
 
     items_base: *mut u8,
@@ -36,6 +37,8 @@ unsafe impl<B, C> Sync for SharedMemQueue<B, C> where
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SharedMemQueueHandle {
     raw_offset: usize,
+    item_size: usize,
+    item_count: usize,
 }
 
 #[repr(C)]
@@ -71,6 +74,7 @@ impl<B, C> SharedMemQueue<B, C> where
         if (memory.borrow().pointer() as usize + offset) % mem::size_of::<usize>() != 0 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "mapped memory for shared memory queue must be aligned"));
         }
+        let raw_offset = memory.borrow().offset() + offset;
 
         let item_offset = Self::item_offset(item_size);
         let items_base = memory.borrow().pointer().offset(offset as isize);
@@ -85,6 +89,7 @@ impl<B, C> SharedMemQueue<B, C> where
 
         Ok(SharedMemQueue {
             _mem: memory,
+            raw_offset,
             control: control as *const SharedMemQueueCtrl,
 
             items_base,
@@ -93,6 +98,41 @@ impl<B, C> SharedMemQueue<B, C> where
             item_count,
 
             _phantom: PhantomData,
+        })
+    }
+
+    pub fn from_handle(handle: SharedMemQueueHandle, memory: B) -> io::Result<Self> {
+        assert!(
+            handle.raw_offset < memory.borrow().offset() &&
+            handle.raw_offset + SharedMemQueue::required_size(handle.item_size, handle.item_count) < memory.borrow().offset() + memory.borrow().len(), "out of range memory for queue");
+        let local_offset = handle.raw_offset - memory.borrow().offset();
+        let item_offset = Self::item_offset(handle.item_size);
+        let items_base;
+        let control;
+        unsafe {
+            items_base = memory.borrow().pointer().offset(local_offset as isize);
+            control = items_base.offset((handle.item_count * item_offset) as isize) as *const SharedMemQueueCtrl;
+        }
+
+        Ok(SharedMemQueue {
+            _mem: memory,
+            raw_offset: handle.raw_offset,
+            control,
+
+            items_base,
+            item_size: handle.item_size,
+            item_offset,
+            item_count: handle.item_count,
+
+            _phantom: PhantomData,
+        })
+    }
+
+    pub fn handle(&self) -> io::Result<SharedMemQueueHandle> {
+        Ok(SharedMemQueueHandle {
+            raw_offset: self.raw_offset,
+            item_size: self.item_size,
+            item_count: self.item_count,
         })
     }
 
