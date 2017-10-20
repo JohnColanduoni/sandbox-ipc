@@ -1,7 +1,6 @@
 use super::Channel;
 
 use std::{io, mem, ptr, process};
-use std::marker::PhantomData;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use std::os::windows::prelude::*;
@@ -68,7 +67,7 @@ impl MessageChannel {
     }
 
     pub fn send_to_child<F>(self, command: &mut process::Command, transmit_and_launch: F) -> io::Result<process::Child> where
-        F: FnOnce(&mut process::Command, &ChildMessageChannel) -> io::Result<process::Child>
+        F: FnOnce(&mut process::Command, ChildMessageChannel) -> io::Result<process::Child>
     {
         let mut target_state = self.target_state.lock().unwrap();
 
@@ -95,10 +94,9 @@ impl MessageChannel {
             channel_handle: inheritable_pipe,
             remote_process_handle: inheritable_process_handle,
             server: self.server,
-            _phantom: PhantomData,
         };
 
-        let child = transmit_and_launch(command, &to_be_sent)?;
+        let child = transmit_and_launch(command, to_be_sent)?;
 
         if self.server {
             *target_state = HandleTargetState::ServerSentTo(WinHandle::cloned(&child)?);

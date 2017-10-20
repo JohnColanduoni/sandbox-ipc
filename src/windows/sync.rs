@@ -17,7 +17,7 @@ pub(crate) struct Mutex<B, C> where
     _mem: B,
     raw_offset: usize,
     atomic: *const AtomicUsize,
-    event: WinHandle,
+    semaphore: WinHandle,
     _phantom: PhantomData<C>,
 }
 
@@ -53,10 +53,10 @@ impl<B, C> Mutex<B, C> where
         assert!((memory.borrow().pointer() as usize + offset) % mem::size_of::<usize>() == 0, "shared memory for IPC mutex must be aligned");
         let atomic = memory.borrow().pointer().offset(offset as isize) as *const AtomicUsize;
         (*atomic).store(0, Ordering::SeqCst);
-        let event = winapi_handle_call!(CreateEventW(
+        let semaphore = winapi_handle_call!(CreateSemaphoreW(
             ptr::null_mut(),
-            TRUE,
-            FALSE,
+            0,
+            1,
             ptr::null(),
         ))?;
 
@@ -66,7 +66,7 @@ impl<B, C> Mutex<B, C> where
             _mem: memory,
             raw_offset,
             atomic,
-            event,
+            semaphore,
             _phantom: PhantomData,
         })
     }
@@ -80,7 +80,7 @@ impl<B, C> Mutex<B, C> where
             _mem: memory,
             raw_offset: handle.raw_offset,
             atomic,
-            event: handle.event.0,
+            semaphore: handle.semaphore.0,
             _phantom: PhantomData,
         })
     }
@@ -90,58 +90,31 @@ impl<B, C> Mutex<B, C> where
         // on an architecture with weak memory model (e.g. ARM)
         let shared_atomic = self.shared_atomic();
         'outer: loop {
-            match shared_atomic.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst) {
-                Ok(_) => {}, // Value was zero, we acquired the lock
-                Err(old_value) => {
-                    if old_value == 1 {
-                        // Inform other threads that lock was contested
-                        match shared_atomic.compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst) {
-                            Ok(_) => {},
-                            Err(2) => {},
-                            Err(0) => {
-                                // Lock went free, try to re-acquire from the top
-                                continue 'outer;
-                            },
-                            _ => panic!("mutex shared memory in invalid state"),
-                        }
-                    } else if old_value == 2 {
-                        // Value is already okay, just continue
-                    } else {
-                        panic!("mutex shared memory in invalid state");
+            match shared_atomic.fetch_add(1, Ordering::SeqCst) {
+                // Mutex was free
+                0 => break,
+                // Mutex is contested
+                _ => {
+                     match unsafe { WaitForSingleObject(
+                        self.semaphore.get(),
+                        INFINITE,
+                    ) } {
+                        WAIT_OBJECT_0 => {},
+                        _ => {
+                            panic!("WaitForSingleObject failed: {}", io::Error::last_os_error());
+                        },
                     }
-
-                    'event: loop {
-                        match unsafe { WaitForSingleObject(
-                            self.event.get(),
-                            INFINITE,
-                        ) } {
-                            WAIT_OBJECT_0 => {},
-                            _ => {
-                                panic!("WaitForSingleObject failed: {}", io::Error::last_os_error());
-                            },
-                        }
-
-                        match shared_atomic.compare_exchange_weak(0, 2, Ordering::SeqCst, Ordering::SeqCst) {
-                            Ok(_) => {
-                                // We acquired the lock, now reset the event so other contending threads/future threads
-                                // block on it
-                                unsafe { winapi_bool_call!(assert: ResetEvent(self.event.get())); }
-                                break 'event;
-                            }
-                            Err(_) => continue 'event,
-                        }
-                    }
+                    break;
                 },
             }
-
-            return MutexGuard { mutex: self };
         }
+
+        return MutexGuard { mutex: self };
     }
 
     pub fn handle(&self) -> io::Result<MutexHandle> {
-        let event = self.event.clone()?;
         Ok(MutexHandle {
-            event: SendableWinHandle(event),
+            semaphore: SendableWinHandle(self.semaphore.clone()?),
             raw_offset: self.raw_offset,
         })
     }
@@ -158,23 +131,22 @@ impl<'a, B, C> Drop for MutexGuard<'a, B, C> where
 {
     fn drop(&mut self) {
         let shared_atomic = self.mutex.shared_atomic();
-        // If the value is two, there was contention and we must signal the associated event
-        match shared_atomic.swap(0, Ordering::SeqCst)  {
-            1 => {}, // No contention
-            2 => {
-                // There was contention, signal event
-                if unsafe { SetEvent(self.mutex.event.get()) } != TRUE {
-                    if !thread::panicking() {
-                        panic!("SetEventfailed: {}", io::Error::last_os_error());
-                    } else {
-                        error!("SetEvent failed: {}", io::Error::last_os_error());
-                    }
-                }
-            }
-            _ => if !thread::panicking() {
+        match shared_atomic.fetch_sub(1, Ordering::SeqCst)  {
+            0 => if !thread::panicking() {
                 panic!("mutex shared memory in invalid state");
             } else {
                 error!("mutex shared memory in invalid state");
+            },
+            1 => {}, // No contention
+            _ => {
+                // There was contention, release semaphore
+                if unsafe { ReleaseSemaphore(self.mutex.semaphore.get(), 1, ptr::null_mut()) } != TRUE {
+                    if !thread::panicking() {
+                        panic!("ReleaseSemaphore failed: {}", io::Error::last_os_error());
+                    } else {
+                        error!("ReleaseSemaphore failed: {}", io::Error::last_os_error());
+                    }
+                }
             },
         }
     }
@@ -182,7 +154,7 @@ impl<'a, B, C> Drop for MutexGuard<'a, B, C> where
 
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct MutexHandle {
-    event: SendableWinHandle,
+    semaphore: SendableWinHandle,
     raw_offset: usize,
 }
 

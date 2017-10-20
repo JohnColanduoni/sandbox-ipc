@@ -371,7 +371,7 @@ mod tests {
                     move || {
                         barrier.wait();
                         loop {
-                            if let Some(mut guard) = queue.try_pop().unwrap() {
+                            if let Some(guard) = queue.try_pop().unwrap() {
                                 assert!(guard[0] < queue_size as u8);
                                 break;
                             }

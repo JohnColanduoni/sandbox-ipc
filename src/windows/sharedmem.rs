@@ -18,7 +18,7 @@ pub struct SharedMem {
 }
 
 pub struct SharedMemMap<T = SharedMem> where
-    T: Borrow<SharedMem>
+    T: Borrow<::SharedMem>
 {
     mem: T,
     pointer: *mut u8,
@@ -28,7 +28,7 @@ pub struct SharedMemMap<T = SharedMem> where
 }
 
 impl<T> Drop for SharedMemMap<T> where
-    T: Borrow<SharedMem>,
+    T: Borrow<::SharedMem>,
 {
     fn drop(&mut self) {
         unsafe {
@@ -73,7 +73,7 @@ impl SharedMem {
     }
 
     pub fn map_with<T, R>(t: T, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<T>> where
-        T: Borrow<SharedMem>,
+        T: Borrow<::SharedMem>,
         R: RangeArgument<usize>,
     {
         let raw_access = match access {
@@ -94,7 +94,7 @@ impl SharedMem {
 
         unsafe {
             let addr = MapViewOfFile(
-                t.borrow().handle.get(),
+                t.borrow().inner.handle.get(),
                 raw_access,
                 (offset >> 32) as DWORD,
                 (offset & 0xFFFFFFFF) as DWORD,
@@ -116,7 +116,7 @@ impl SharedMem {
 }
 
 impl<T> SharedMemMap<T> where
-    T: Borrow<SharedMem>,
+    T: Borrow<::SharedMem>,
 {
     pub fn unmap(self) -> io::Result<T> {
         unsafe {
