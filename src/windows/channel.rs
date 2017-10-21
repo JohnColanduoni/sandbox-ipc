@@ -253,6 +253,12 @@ impl ProcessToken {
             (self.0).0.clone()?
         )))
     }
+
+    pub unsafe fn from_process_handle<H>(handle: &H) -> io::Result<Self> where H: AsRawHandle {
+        Ok(ProcessToken(SendableWinHandle(
+            WinHandle::cloned_ex(handle, false, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?
+        )))
+    }
 }
 
 pub struct NamedMessageChannel {
