@@ -1,4 +1,4 @@
-use super::Channel;
+use super::{Channel, SendableWinHandle};
 
 use std::{io, mem, ptr, process};
 use std::time::Duration;
@@ -204,6 +204,54 @@ impl<'a> Iterator for ChildMessageChannelHandles<'a> {
         };
         self.index += 1;
         Some(handle)
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PreMessageChannel {
+    pipe: SendableWinHandle,
+    server: bool,
+}
+
+impl PreMessageChannel {
+    pub fn pair() -> io::Result<(Self, Self)> {
+        let (server_pipe, client_pipe) = raw_pipe_pair(PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_REJECT_REMOTE_CLIENTS)?;
+
+        Ok((
+            PreMessageChannel { pipe: SendableWinHandle(server_pipe), server: true },
+            PreMessageChannel { pipe: SendableWinHandle(client_pipe), server: false },
+        ))
+    }
+
+    pub fn into_channel(self, process_token: ProcessToken, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
+        let target_state = if self.server {
+            HandleTargetState::ClientSentTo((process_token.0).0)
+        } else {
+            HandleTargetState::ServerSentTo((process_token.0).0)
+        };
+
+        Ok(MessageChannel {
+            pipe: NamedPipe::Unregistered { pipe: self.pipe.0, tokio: tokio_loop.clone() },
+            server: self.server,
+            target_state: Arc::new(Mutex::new(target_state)),
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ProcessToken(SendableWinHandle);
+
+impl ProcessToken {
+    pub fn this_process() -> io::Result<Self> {
+        let handle = WinHandle::from_raw(unsafe { GetCurrentProcess() }).unwrap()
+            .clone_ex(false, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?;
+        Ok(ProcessToken(SendableWinHandle(handle)))
+    }
+
+    pub fn clone(&self) -> io::Result<Self> {
+        Ok(ProcessToken(SendableWinHandle(
+            (self.0).0.clone()?
+        )))
     }
 }
 
