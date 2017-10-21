@@ -69,6 +69,15 @@ impl MessageChannel {
     pub fn send_to_child<F>(self, command: &mut process::Command, transmit_and_launch: F) -> io::Result<process::Child> where
         F: FnOnce(&mut process::Command, ChildMessageChannel) -> io::Result<process::Child>
     {
+        self.send_to_child_custom(|to_be_sent| {
+            let child = transmit_and_launch(command, to_be_sent)?;
+            Ok((WinHandle::cloned(&child)?, child))
+        })
+    }
+
+    pub fn send_to_child_custom<F, T>(self, transmit_and_launch: F) -> io::Result<T> where
+        F: FnOnce(ChildMessageChannel) -> io::Result<(WinHandle, T)>,
+    {
         let mut target_state = self.target_state.lock().unwrap();
 
         let inheritable_process_handle = match *target_state {
@@ -96,15 +105,31 @@ impl MessageChannel {
             server: self.server,
         };
 
-        let child = transmit_and_launch(command, to_be_sent)?;
+        let (child_handle, t) = transmit_and_launch(to_be_sent)?;
 
         if self.server {
-            *target_state = HandleTargetState::ServerSentTo(WinHandle::cloned(&child)?);
+            *target_state = HandleTargetState::ServerSentTo(child_handle);
         } else {
-            *target_state = HandleTargetState::ClientSentTo(WinHandle::cloned(&child)?);
+            *target_state = HandleTargetState::ClientSentTo(child_handle);
         }
 
-        Ok(child)
+        Ok(t)
+    }
+}
+
+impl Channel for MessageChannel {
+    fn handle_target(&self) -> HandleTarget<HANDLE> {
+        match *self.target_state.lock().unwrap() {
+            HandleTargetState::Unsent => HandleTarget::CurrentProcess,
+            HandleTargetState::ServerSentTo(ref remote) => {
+                assert!(!self.server);
+                HandleTarget::RemoteProcess(remote.get())
+            },
+            HandleTargetState::ClientSentTo(ref remote) => {
+                assert!(self.server);
+                HandleTarget::RemoteProcess(remote.get())
+            },
+        }
     }
 }
 
@@ -139,22 +164,6 @@ mod inheritable_channel_serialize {
     }
 }
 
-impl Channel for MessageChannel {
-    fn handle_target(&self) -> HandleTarget<HANDLE> {
-        match *self.target_state.lock().unwrap() {
-            HandleTargetState::Unsent => HandleTarget::CurrentProcess,
-            HandleTargetState::ServerSentTo(ref remote) => {
-                assert!(!self.server);
-                HandleTarget::RemoteProcess(remote.get())
-            },
-            HandleTargetState::ClientSentTo(ref remote) => {
-                assert!(self.server);
-                HandleTarget::RemoteProcess(remote.get())
-            },
-        }
-    }
-}
-
 impl ChildMessageChannel {
     pub fn into_channel(self, tokio: &TokioHandle) -> io::Result<MessageChannel> {
         let state = Arc::new(Mutex::new({
@@ -172,6 +181,29 @@ impl ChildMessageChannel {
                 target_state: state.clone(),
             }
         )
+    }
+
+    pub fn handles(&self) -> ChildMessageChannelHandles {
+        ChildMessageChannelHandles { channel_handle: self, index: 0 }
+    }
+}
+
+pub struct ChildMessageChannelHandles<'a> {
+    channel_handle: &'a ChildMessageChannel,
+    index: usize,
+}
+
+impl<'a> Iterator for ChildMessageChannelHandles<'a> {
+    type Item = HANDLE;
+
+    fn next(&mut self) -> Option<HANDLE> {
+        let handle = match self.index {
+            0 => self.channel_handle.channel_handle.get(),
+            1 => self.channel_handle.remote_process_handle.get(),
+            _ => return None,
+        };
+        self.index += 1;
+        Some(handle)
     }
 }
 
