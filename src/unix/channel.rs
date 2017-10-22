@@ -24,28 +24,12 @@ pub struct MessageChannel {
 
 impl MessageChannel {
     pub fn pair(tokio_loop: &TokioHandle) -> io::Result<(Self, Self)> {
-        unsafe {
-            let mut sockets: [libc::c_int; 2] = [0, 0];
+        let (a, b) = raw_socketpair()?;
 
-            let socket_type = if use_seqpacket!() {
-                libc::SOCK_SEQPACKET
-            } else {
-                libc::SOCK_DGRAM
-            };
-
-            if libc::socketpair(libc::AF_UNIX, socket_type, 0, sockets.as_mut_ptr()) == -1 {
-                return Err(io::Error::last_os_error());
-            }
-
-            for &socket in sockets.iter() {
-                set_cloexec(socket)?;
-            }
-
-            Ok((
-                MessageChannel { socket: PollEvented::new(ScopedFd(sockets[0]), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
-                MessageChannel { socket: PollEvented::new(ScopedFd(sockets[1]), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
-            ))
-        }
+        Ok((
+            MessageChannel { socket: PollEvented::new(a, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
+            MessageChannel { socket: PollEvented::new(b, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
+        ))
     }
 
     pub fn send_to_child<F>(self, command: &mut process::Command, transmit_and_launch: F) -> io::Result<process::Child> where
@@ -57,6 +41,19 @@ impl MessageChannel {
         let channel = ChildMessageChannel { fd };
 
         transmit_and_launch(command, channel)
+    }
+
+    pub fn send_to_child_custom<F, T>(self, transmit_and_launch: F) -> io::Result<T> where
+        F: FnOnce(ChildMessageChannel) -> io::Result<(ProcessToken, T)>
+    {
+        let fd = self.socket.get_ref().0;
+        clear_cloexec(fd)?;
+
+        let channel = ChildMessageChannel { fd };
+
+        let (_token, t) = transmit_and_launch(channel)?;
+
+        Ok(t)
     }
 }
 
@@ -139,6 +136,40 @@ impl io::Read for MessageChannel {
 }
 
 impl AsyncRead for MessageChannel {
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PreMessageChannel {
+    fd: ScopedFd,
+}
+
+impl PreMessageChannel {
+    pub fn pair() -> io::Result<(Self, Self)> {
+        let (a, b) = raw_socketpair()?;
+
+        Ok((
+            PreMessageChannel { fd: a },
+            PreMessageChannel { fd: b },
+        ))
+    }
+
+    pub fn into_channel(self, _remote_process: ProcessToken, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
+        Ok(MessageChannel { socket: PollEvented::new(self.fd, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) })
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ProcessToken {
+}
+
+impl ProcessToken {
+    pub fn current() -> io::Result<Self> {
+        Ok(ProcessToken {})
+    }
+
+    pub fn clone(&self) -> io::Result<Self> {
+        Ok(ProcessToken {})
+    }
 }
 
 pub struct NamedMessageChannel {
@@ -277,5 +308,27 @@ impl NamedMessageChannel {
                 })
             }
         }
+    }
+}
+
+fn raw_socketpair() -> io::Result<(ScopedFd, ScopedFd)> {
+    unsafe {
+        let mut sockets: [libc::c_int; 2] = [0, 0];
+
+        let socket_type = if use_seqpacket!() {
+            libc::SOCK_SEQPACKET
+        } else {
+            libc::SOCK_DGRAM
+        };
+
+        if libc::socketpair(libc::AF_UNIX, socket_type, 0, sockets.as_mut_ptr()) == -1 {
+            return Err(io::Error::last_os_error());
+        }
+
+        for &socket in sockets.iter() {
+            set_cloexec(socket)?;
+        }
+
+        Ok((ScopedFd(sockets[0]), ScopedFd(sockets[1])))
     }
 }

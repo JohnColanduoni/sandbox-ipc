@@ -1,4 +1,4 @@
-use ::SharedMemAccess;
+use ::shm::SharedMemAccess;
 use platform::{ScopedFd};
 
 use std::{io, mem, ptr};
@@ -18,7 +18,7 @@ pub(crate) struct SharedMem {
 }
 
 pub(crate) struct SharedMemMap<T = SharedMem> where
-    T: Borrow<::SharedMem>
+    T: Borrow<::shm::SharedMem>
 {
     mem: T,
     pointer: *mut u8,
@@ -28,7 +28,7 @@ pub(crate) struct SharedMemMap<T = SharedMem> where
 }
 
 impl<T> Drop for SharedMemMap<T> where
-    T: Borrow<::SharedMem>,
+    T: Borrow<::shm::SharedMem>,
 {
     fn drop(&mut self) {
         unsafe {
@@ -106,7 +106,7 @@ impl SharedMem {
     }
 
     pub fn map_with<T, R>(t: T, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<T>> where
-        T: Borrow<::SharedMem>,
+        T: Borrow<::shm::SharedMem>,
         R: RangeArgument<usize>,
     {
         let (prot, fd) = match access {
@@ -147,7 +147,7 @@ impl SharedMem {
 }
 
 impl<T> SharedMemMap<T> where
-    T: Borrow<::SharedMem>,
+    T: Borrow<::shm::SharedMem>,
 {
     pub fn unmap(self) -> io::Result<T> {
         unsafe {

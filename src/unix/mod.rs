@@ -1,4 +1,4 @@
-use ::SendableFile;
+use ::io::SendableFile;
 use ser::{SerializeWrapper, SerializeWrapperGuard};
 
 extern crate libc;

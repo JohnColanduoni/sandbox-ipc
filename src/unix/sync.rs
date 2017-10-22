@@ -1,4 +1,4 @@
-use ::{SharedMem, SharedMemMap};
+use ::shm::{SharedMem, SharedMemMap};
 
 use std::{io, mem, thread, usize};
 use std::marker::PhantomData;
