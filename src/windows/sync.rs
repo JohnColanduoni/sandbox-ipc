@@ -1,3 +1,4 @@
+use ::{CACHE_LINE};
 use ::shm::{SharedMem, SharedMemMap};
 use ::platform::SendableWinHandle;
 
@@ -28,10 +29,7 @@ pub(crate) struct MutexGuard<'a, B, C> where
     mutex: &'a Mutex<B, C>,
 }
 
-#[cfg(target_pointer_width = "32")]
-pub(crate) const MUTEX_SHM_SIZE: usize = 4;
-#[cfg(target_pointer_width = "64")]
-pub(crate) const MUTEX_SHM_SIZE: usize = 8;
+pub(crate) const MUTEX_SHM_SIZE: usize = CACHE_LINE;
 
 // We implement the mutex as a rudimentary thin lock, but with shared memory and
 // a semaphore to handle waiting threads. The state of the mutex is always consistent

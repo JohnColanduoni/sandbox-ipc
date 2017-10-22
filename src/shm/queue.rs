@@ -45,12 +45,16 @@ pub struct Handle {
     shm_token: Uuid,
 }
 
-#[repr(C)]
+#[repr(packed)]
 struct SharedMemQueueCtrl {
     next_send_index: AtomicUsize,
+    _padding1: [u8; CACHE_LINE - mem::size_of::<usize>()],
     last_sent_index: AtomicUsize,
+    _padding2: [u8; CACHE_LINE - mem::size_of::<usize>()],
     next_recv_index: AtomicUsize,
+    _padding3: [u8; CACHE_LINE - mem::size_of::<usize>()],
     last_recvd_index: AtomicUsize,
+    _padding4: [u8; CACHE_LINE - mem::size_of::<usize>()],
     poison: AtomicBool,
 }
 
@@ -89,6 +93,10 @@ impl<B, C> Queue<B, C> where
             next_recv_index: AtomicUsize::new(0),
             last_recvd_index: AtomicUsize::new(usize::MAX),
             poison: AtomicBool::new(false),
+            _padding1: [0; CACHE_LINE - mem::size_of::<usize>()],
+            _padding2: [0; CACHE_LINE - mem::size_of::<usize>()],
+            _padding3: [0; CACHE_LINE - mem::size_of::<usize>()],
+            _padding4: [0; CACHE_LINE - mem::size_of::<usize>()],
         };
 
         Ok(Queue {
