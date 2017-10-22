@@ -189,9 +189,9 @@ pub trait ChildRawMessageChannelExt {
     fn handles(&self) -> ChildMessageChannelHandles;
 }
 
-impl ChildRawMessageChannelExt for ChildMessageChannel {
+impl ChildRawMessageChannelExt for ::ChildRawMessageChannel {
     fn handles(&self) -> ChildMessageChannelHandles {
-        ChildMessageChannelHandles { channel_handle: self, index: 0 }
+        ChildMessageChannelHandles { channel_handle: &self.0, index: 0 }
     }
 }
 

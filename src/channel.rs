@@ -193,7 +193,7 @@ impl AsyncWrite for RawMessageChannel {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct ChildRawMessageChannel(platform::ChildMessageChannel);
+pub struct ChildRawMessageChannel(pub(crate) platform::ChildMessageChannel);
 
 impl ChildRawMessageChannel {
     pub fn into_channel(self, tokio_loop: &TokioHandle) -> io::Result<RawMessageChannel> {
