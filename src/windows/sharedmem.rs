@@ -1,4 +1,4 @@
-use ::shm::SharedMemAccess;
+use ::shm::{Access as SharedMemAccess};
 use platform::SendableWinHandle;
 
 use std::{io, mem, ptr};
@@ -26,6 +26,13 @@ pub(crate) struct SharedMemMap<T = SharedMem> where
     access: SharedMemAccess,
     pointer_offset: usize,
 }
+
+unsafe impl<T> Send for SharedMemMap<T> where
+    T: Borrow<::shm::SharedMem> + Send,
+{ }
+unsafe impl<T> Sync for SharedMemMap<T> where
+    T: Borrow<::shm::SharedMem> + Send + Sync,
+{ }
 
 impl<T> Drop for SharedMemMap<T> where
     T: Borrow<::shm::SharedMem>,
@@ -57,8 +64,11 @@ impl SharedMem {
 
     pub fn size(&self) -> usize { self.size }
 
-    pub fn clone(&self, read_only: bool) -> io::Result<SharedMem> {
-        let access = if read_only { FILE_MAP_READ } else { FILE_MAP_ALL_ACCESS };
+    pub fn clone(&self, access: SharedMemAccess) -> io::Result<SharedMem> {
+        let access = match access {
+            SharedMemAccess::Read => FILE_MAP_READ,
+            SharedMemAccess::ReadWrite => FILE_MAP_ALL_ACCESS,
+        };
 
         unsafe {
             let mut handle = WinHandleTarget::new();
@@ -137,6 +147,10 @@ impl<T> SharedMemMap<T> where
     pub fn len(&self) -> usize { self.len }
     pub fn access(&self) -> SharedMemAccess { self.access }
     pub fn offset(&self) -> usize { self.pointer_offset }
+
+    pub(crate) fn object(&self) -> &::shm::SharedMem {
+        self.mem.borrow()
+    }
 }
 
 impl Serialize for SharedMem {

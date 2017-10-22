@@ -35,6 +35,7 @@ enum NamedPipe {
 
 #[derive(Debug)]
 pub(crate) enum HandleTarget<H = WinHandle> {
+    #[allow(dead_code)]
     None,
     CurrentProcess,
     RemoteProcess(H),
@@ -71,7 +72,7 @@ impl MessageChannel {
     {
         self.send_to_child_custom(|to_be_sent| {
             let child = transmit_and_launch(command, to_be_sent)?;
-            Ok((ProcessToken::from_process_handle(&child)?, child))
+            Ok((::ProcessToken::from_process_handle(&child)?.0, child))
         })
     }
 

@@ -14,7 +14,7 @@ pub(crate) struct Mutex<B, C> where
     B: Borrow<SharedMemMap<C>>,
     C: Borrow<SharedMem>,
 {
-    _mem: B,
+    mem: B,
     raw_offset: usize,
     atomic: *const AtomicUsize,
     semaphore: WinHandle,
@@ -34,16 +34,12 @@ pub(crate) const MUTEX_SHM_SIZE: usize = 4;
 pub(crate) const MUTEX_SHM_SIZE: usize = 8;
 
 // We implement the mutex as a rudimentary thin lock, but with shared memory and
-// an event to handle waiting threads. The state of the mutex is always consistent
+// a semaphore to handle waiting threads. The state of the mutex is always consistent
 // with the value in shared memory (0 for free, non-zero for acquired). Threads attempt to 
-// acquire the mutex by an atomic fetch-add. If they fail to acquire the mutex
-// they enter a loop in which they wait for the event to be signaled and then attempt
-// to acquire the mutex again, this time via a CAS from zero to one.
-//
-// The event is during normal operation left in the unsignaled state. When a thread releases
-// the mutex it checks if the shared memory value is greater than 1, indicating there was
-// contention for the mutex and another thread is waiting to acquire it. In that case it
-// signals the event
+// acquire the mutex by an atomic fetch-add. If they fail to acquire the mutex they wait
+// on the semaphore. When releasing the mutex via a fetch-sub operation, the releasing thread
+// checks if the count before the operation was greater than one, and if so performs a release
+// operation on the semaphore.
 impl<B, C> Mutex<B, C> where
     B: Borrow<SharedMemMap<C>>,
     C: Borrow<SharedMem>,
@@ -63,7 +59,7 @@ impl<B, C> Mutex<B, C> where
         let raw_offset = memory.borrow().offset() + offset;
 
         Ok(Mutex {
-            _mem: memory,
+            mem: memory,
             raw_offset,
             atomic,
             semaphore,
@@ -77,7 +73,7 @@ impl<B, C> Mutex<B, C> where
         let atomic = memory.borrow().pointer().offset(offset as isize) as *const AtomicUsize;
 
         Ok(Mutex {
-            _mem: memory,
+            mem: memory,
             raw_offset: handle.raw_offset,
             atomic,
             semaphore: handle.semaphore.0,
@@ -122,6 +118,10 @@ impl<B, C> Mutex<B, C> where
     #[inline]
     fn shared_atomic(&self) -> &AtomicUsize {
         unsafe { &*self.atomic }
+    }
+
+    pub(crate) fn memory(&self) -> &::shm::SharedMemMap<C> {
+        self.mem.borrow()
     }
 }
 
