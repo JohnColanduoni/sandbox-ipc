@@ -78,7 +78,7 @@ pub fn run_parent(mut tokio_loop: TokioLoop, channel: MessageChannel<Message, Me
     // Interact with shared mutex
     shared_mem.store(false, Ordering::SeqCst);
     let guard = mutex.lock();
-    let channel = await!(tokio_loop => channel.send(Message::HaveAMutex(memory.clone(false).unwrap(), mutex.handle().unwrap())));
+    let channel = await!(tokio_loop => channel.send(Message::HaveAMutex(memory.clone(SharedMemAccess::ReadWrite).unwrap(), mutex.handle().unwrap())));
     println!("parent sent mutex");
     thread::sleep(Duration::from_millis(100));
     assert_eq!(false, shared_mem.load(Ordering::SeqCst));

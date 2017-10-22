@@ -72,36 +72,39 @@ impl SharedMem {
 
     pub fn size(&self) -> usize { self.size }
 
-    pub fn clone(&self, read_only: bool) -> io::Result<SharedMem> {
-        if read_only {
-            let ro_fd = unsafe { libc::dup(self.ro_fd.0) };
-            if ro_fd < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(SharedMem {
-                rw_fd: None,
-                ro_fd: ScopedFd(ro_fd),
-                size: self.size,
-            })
-        } else {
-            if let Some(rw_fd) = self.rw_fd.as_ref() {
-                let rw_fd = unsafe { libc::dup(rw_fd.0) };
-                if rw_fd < 0 {
-                    return Err(io::Error::last_os_error());
-                }
+    pub fn clone(&self, access: SharedMemAccess) -> io::Result<SharedMem> {
+        match access {
+            SharedMemAccess::Read => {
                 let ro_fd = unsafe { libc::dup(self.ro_fd.0) };
                 if ro_fd < 0 {
                     return Err(io::Error::last_os_error());
                 }
-
                 Ok(SharedMem {
-                    rw_fd: Some(ScopedFd(rw_fd)),
+                    rw_fd: None,
                     ro_fd: ScopedFd(ro_fd),
                     size: self.size,
                 })
-            } else {
-                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "this shared memory handle is read-only"));
-            }
+            },
+            SharedMemAccess::ReadWrite => {
+                if let Some(rw_fd) = self.rw_fd.as_ref() {
+                    let rw_fd = unsafe { libc::dup(rw_fd.0) };
+                    if rw_fd < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    let ro_fd = unsafe { libc::dup(self.ro_fd.0) };
+                    if ro_fd < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+
+                    Ok(SharedMem {
+                        rw_fd: Some(ScopedFd(rw_fd)),
+                        ro_fd: ScopedFd(ro_fd),
+                        size: self.size,
+                    })
+                } else {
+                    return Err(io::Error::new(io::ErrorKind::PermissionDenied, "this shared memory handle is read-only"));
+                }
+            },
         }
     }
 
@@ -167,4 +170,8 @@ impl<T> SharedMemMap<T> where
     pub fn len(&self) -> usize { self.len }
     pub fn access(&self) -> SharedMemAccess { self.access }
     pub fn offset(&self) -> usize { self.pointer_offset }
+
+    pub fn object(&self) -> &::shm::SharedMem {
+        self.mem.borrow()
+    }
 }

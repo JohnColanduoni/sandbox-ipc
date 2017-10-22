@@ -4,11 +4,14 @@ use std::{io};
 use std::collections::range::RangeArgument;
 use std::borrow::Borrow;
 
+use uuid::Uuid;
+
 pub mod queue;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SharedMem {
     pub(crate) inner: platform::SharedMem,
+    pub(crate) token: Uuid,
 }
 
 pub struct SharedMemMap<T = SharedMem> where
@@ -26,14 +29,15 @@ pub enum SharedMemAccess {
 impl SharedMem {
     pub fn new(size: usize) -> io::Result<SharedMem> {
         let inner = platform::SharedMem::new(size)?;
-        Ok(SharedMem { inner })
+        let token = Uuid::new_v4();
+        Ok(SharedMem { inner, token })
     }
 
     pub fn size(&self) -> usize { self.inner.size() }
 
-    pub fn clone(&self, read_only: bool) -> io::Result<SharedMem> {
-        let inner = self.inner.clone(read_only)?;
-        Ok(SharedMem { inner })
+    pub fn clone(&self, access: SharedMemAccess) -> io::Result<SharedMem> {
+        let inner = self.inner.clone(access)?;
+        Ok(SharedMem { inner, token: self.token })
     }
 
     pub fn map<R>(self, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<Self>> where
@@ -68,6 +72,8 @@ impl<T> SharedMemMap<T> where
     pub fn len(&self) -> usize { self.inner.len() }
     pub fn access(&self) -> SharedMemAccess { self.inner.access() }
     pub fn offset(&self) -> usize { self.inner.offset() }
+
+    pub(crate) fn token(&self) -> Uuid { self.inner.object().token }
 }
 
 #[cfg(test)]

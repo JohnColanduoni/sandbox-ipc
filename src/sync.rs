@@ -6,6 +6,8 @@ use std::borrow::Borrow;
 use std::sync::{LockResult, PoisonError};
 use std::sync::atomic::{Ordering, AtomicBool};
 
+use uuid::Uuid;
+
 pub struct Mutex<B, C> where
     B: Borrow<SharedMemMap<C>>,
     C: Borrow<SharedMem>,
@@ -22,10 +24,7 @@ pub struct MutexGuard<'a, B, C> where
     _inner: platform::MutexGuard<'a, B, C>,
 }
 
-#[cfg(target_pointer_width = "32")]
-pub const MUTEX_SHM_SIZE: usize = platform::MUTEX_SHM_SIZE + 4;
-#[cfg(target_pointer_width = "64")]
-pub const MUTEX_SHM_SIZE: usize = platform::MUTEX_SHM_SIZE + 8;
+pub const MUTEX_SHM_SIZE: usize = platform::MUTEX_SHM_SIZE + mem::size_of::<usize>();
 
 // On top of the OS-level mutex, we add a usize (protected by the mutex) that signals
 // that the lock is poisoned (possibly by a thread in another process).
@@ -38,6 +37,9 @@ impl<B, C> Mutex<B, C> where
     }
 
     pub fn from_handle(handle: MutexHandle, memory: B) -> io::Result<Self> {
+        if memory.borrow().token() != handle.shm_token {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "the mutex is not associated with the given shared memory"));
+        }
         let local_offset = handle.inner.raw_offset().checked_sub(memory.borrow().offset())
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "mapping does not contain memory of shared mutex"))?;
         if memory.borrow().len() < local_offset + MUTEX_SHM_SIZE {
@@ -84,7 +86,7 @@ impl<B, C> Mutex<B, C> where
 
     pub fn handle(&self) -> io::Result<MutexHandle> {
         let inner = self.inner.handle()?;
-        Ok(MutexHandle { inner })
+        Ok(MutexHandle { inner, shm_token: self.inner.memory().token() })
     }
 
     fn poison_flag(&self) -> &AtomicBool {
@@ -107,6 +109,7 @@ impl<'a, B, C> Drop for MutexGuard<'a, B, C> where
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MutexHandle {
     inner: platform::MutexHandle,
+    shm_token: Uuid,
 }
 
 #[cfg(test)]

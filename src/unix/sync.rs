@@ -11,7 +11,7 @@ pub(crate) struct Mutex<B, C> where
     B: Borrow<SharedMemMap<C>>,
     C: Borrow<SharedMem>,
 {
-    _mem: B,
+    mem: B,
     raw_offset: usize,
     refcount: *const AtomicUsize,
     pthread_mutex: *mut libc::pthread_mutex_t,
@@ -67,7 +67,7 @@ impl<B, C> Mutex<B, C> where
         libc::pthread_mutexattr_destroy(&mut attr);
 
         Ok(Mutex {
-            _mem: memory,
+            mem: memory,
             raw_offset,
             refcount,
             pthread_mutex,
@@ -84,7 +84,7 @@ impl<B, C> Mutex<B, C> where
         let pthread_mutex = refcount.offset(1) as *mut libc::pthread_mutex_t;
 
         Ok(Mutex {
-            _mem: memory,
+            mem: memory,
             raw_offset: handle.raw_offset,
             refcount,
             pthread_mutex,
@@ -103,6 +103,10 @@ impl<B, C> Mutex<B, C> where
         Ok(MutexHandle {
             raw_offset: self.raw_offset,
         })
+    }
+
+    pub fn memory(&self) -> &SharedMemMap<C> {
+        self.mem.borrow()
     }
 }
 

@@ -8,12 +8,14 @@ use std::borrow::Borrow;
 use std::sync::{LockResult, PoisonError};
 use std::sync::atomic::{Ordering, AtomicUsize, AtomicBool};
 
+use uuid::Uuid;
+
 #[derive(Debug)]
 pub struct SharedMemQueue<B = SharedMemMap<SharedMem>, C = SharedMem> where
     B: Borrow<SharedMemMap<C>>,
     C: Borrow<SharedMem>,
 {
-    _mem: B,
+    mem: B,
     raw_offset: usize,
     control: *const SharedMemQueueCtrl,
 
@@ -40,6 +42,7 @@ pub struct SharedMemQueueHandle {
     raw_offset: usize,
     item_size: usize,
     item_count: usize,
+    shm_token: Uuid,
 }
 
 #[repr(C)]
@@ -89,7 +92,7 @@ impl<B, C> SharedMemQueue<B, C> where
         };
 
         Ok(SharedMemQueue {
-            _mem: memory,
+            mem: memory,
             raw_offset,
             control: control as *const SharedMemQueueCtrl,
 
@@ -103,9 +106,14 @@ impl<B, C> SharedMemQueue<B, C> where
     }
 
     pub fn from_handle(handle: SharedMemQueueHandle, memory: B) -> io::Result<Self> {
-        assert!(
-            handle.raw_offset < memory.borrow().offset() &&
-            handle.raw_offset + SharedMemQueue::required_size(handle.item_size, handle.item_count) < memory.borrow().offset() + memory.borrow().len(), "out of range memory for queue");
+        if handle.shm_token != memory.borrow().token() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "the queue is not associated with the given shared memory"));
+        }
+        if !(handle.raw_offset < memory.borrow().offset() &&
+                handle.raw_offset + SharedMemQueue::required_size(handle.item_size, handle.item_count) < memory.borrow().offset() + memory.borrow().len())
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "the queue is not contained within this shared memory mapping"));
+        }
         let local_offset = handle.raw_offset - memory.borrow().offset();
         let item_offset = Self::item_offset(handle.item_size);
         let items_base;
@@ -116,7 +124,7 @@ impl<B, C> SharedMemQueue<B, C> where
         }
 
         Ok(SharedMemQueue {
-            _mem: memory,
+            mem: memory,
             raw_offset: handle.raw_offset,
             control,
 
@@ -134,6 +142,7 @@ impl<B, C> SharedMemQueue<B, C> where
             raw_offset: self.raw_offset,
             item_size: self.item_size,
             item_count: self.item_count,
+            shm_token: self.mem.borrow().token(),
         })
     }
 

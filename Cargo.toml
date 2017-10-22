@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 log = ">=0.3"
-uuid = { version = "0.5", features = ["v4"] }
+uuid = { version = "0.5", features = ["v4", "serde"] }
 rand = "0.3"
 
 serde = "1.0"
