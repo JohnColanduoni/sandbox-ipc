@@ -22,6 +22,9 @@ pub struct MessageChannel {
     cmsg: Cmsg,
 }
 
+// For all unixy platforms we use unix domain sockets for MessageChannel. For platforms that
+// support SOCK_SEQPACKET, we use that. OS X notably doesn't, but it does preserve message
+// boundaries when using sendmsg with a SOCK_STREAM socket, so we just use that.
 impl MessageChannel {
     pub fn pair(tokio_loop: &TokioHandle) -> io::Result<(Self, Self)> {
         let (a, b) = raw_socketpair()?;
@@ -189,38 +192,28 @@ impl NamedMessageChannel {
         let name = OsString::from(env::temp_dir().join(format!("{}", Uuid::new_v4())));
 
         unsafe {
-            if use_seqpacket!() {
-                let socket = ScopedFd(libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0));
-                set_cloexec(socket.0)?;
-
-                let addr = sockaddr_un(&name);
-                if libc::bind(socket.0, &addr as *const _ as *const libc::sockaddr, mem::size_of_val(&addr) as _) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if libc::listen(socket.0, 1) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-
-                Ok(NamedMessageChannel {
-                    socket,
-                    tokio_loop: tokio_loop.clone(),
-                    name: OsString::from(name),
-                })
+            let typ = if use_seqpacket!() {
+                libc::SOCK_SEQPACKET
             } else {
-                let socket = ScopedFd(libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0));
-                set_cloexec(socket.0)?;
+                libc::SOCK_STREAM
+            };
 
-                let addr = sockaddr_un(&name);
-                if libc::bind(socket.0, &addr as *const _ as *const libc::sockaddr, mem::size_of_val(&addr) as _) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
+            let socket = ScopedFd(libc::socket(libc::AF_UNIX, typ, 0));
+            set_cloexec(socket.0)?;
 
-                Ok(NamedMessageChannel {
-                    socket,
-                    tokio_loop: tokio_loop.clone(),
-                    name: OsString::from(name),
-                })
+            let addr = sockaddr_un(&name);
+            if libc::bind(socket.0, &addr as *const _ as *const libc::sockaddr, mem::size_of_val(&addr) as _) < 0 {
+                return Err(io::Error::last_os_error());
             }
+            if libc::listen(socket.0, 1) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            Ok(NamedMessageChannel {
+                socket,
+                tokio_loop: tokio_loop.clone(),
+                name: OsString::from(name),
+            })
         }
     }
 
@@ -231,29 +224,15 @@ impl NamedMessageChannel {
     pub fn accept(self, _timeout: Option<Duration>) -> io::Result<MessageChannel> {
         // TODO: use timeout
         unsafe {
-            if use_seqpacket!() {
-                let socket = libc::accept(self.socket.0, ptr::null_mut(), ptr::null_mut());
-                if socket < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-
-                Ok(MessageChannel {
-                    socket: PollEvented::new(ScopedFd(socket), &self.tokio_loop)?,
-                    cmsg: Cmsg::new(MAX_MSG_FDS),
-                })
-            } else {
-                let mut buffer = [0u8; 1];
-                let mut cmsg = Cmsg::new(1);
-                cmsg.set_data(&mut buffer);
-                if libc::recvmsg(self.socket.0, cmsg.ptr(), 0) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-
-                Ok(MessageChannel {
-                    socket: PollEvented::new(ScopedFd(cmsg.fds()[0]), &self.tokio_loop)?,
-                    cmsg: Cmsg::new(MAX_MSG_FDS),
-                })
+            let socket = libc::accept(self.socket.0, ptr::null_mut(), ptr::null_mut());
+            if socket < 0 {
+                return Err(io::Error::last_os_error());
             }
+
+            Ok(MessageChannel {
+                socket: PollEvented::new(ScopedFd(socket), &self.tokio_loop)?,
+                cmsg: Cmsg::new(MAX_MSG_FDS),
+            })
         }
     }
 
@@ -264,49 +243,24 @@ impl NamedMessageChannel {
 
         // TODO: use timeout
         unsafe {
-            if use_seqpacket!() {
-                let socket = libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0);
-                set_cloexec(socket)?;
-
-                let addr = sockaddr_un(name);
-                if libc::connect(socket, &addr as *const _ as *const libc::sockaddr, mem::size_of_val(&addr) as _) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-
-                Ok(MessageChannel {
-                    socket: PollEvented::new(ScopedFd(socket), tokio_loop)?,
-                    cmsg: Cmsg::new(MAX_MSG_FDS),
-                })
+            let typ = if use_seqpacket!() {
+                libc::SOCK_SEQPACKET
             } else {
-                let init_socket = libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0);
-                set_cloexec(init_socket)?;
-                let addr = sockaddr_un(&name);
-                if libc::connect(init_socket, &addr as *const _ as *const libc::sockaddr, mem::size_of_val(&addr) as _) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
+                libc::SOCK_STREAM
+            };
 
-                // Create unnammed SOCK_DGRAM pair
-                let mut sockets: [libc::c_int; 2] = [0, 0];
-                if libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, sockets.as_mut_ptr()) == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-                for &socket in sockets.iter() {
-                    set_cloexec(socket)?;
-                }
+            let socket = libc::socket(libc::AF_UNIX, typ, 0);
+            set_cloexec(socket)?;
 
-                let mut cmsg = Cmsg::new(1);
-                cmsg.set_fds(&[sockets[1]]);
-                cmsg.set_data(&[0u8]);
-                if libc::sendmsg(init_socket, cmsg.ptr(), 0) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                libc::close(sockets[1]);
-
-                Ok(MessageChannel {
-                    socket: PollEvented::new(ScopedFd(sockets[0]), tokio_loop)?,
-                    cmsg: Cmsg::new(MAX_MSG_FDS),
-                })
+            let addr = sockaddr_un(name);
+            if libc::connect(socket, &addr as *const _ as *const libc::sockaddr, mem::size_of_val(&addr) as _) < 0 {
+                return Err(io::Error::last_os_error());
             }
+
+            Ok(MessageChannel {
+                socket: PollEvented::new(ScopedFd(socket), tokio_loop)?,
+                cmsg: Cmsg::new(MAX_MSG_FDS),
+            })
         }
     }
 }
@@ -318,7 +272,7 @@ fn raw_socketpair() -> io::Result<(ScopedFd, ScopedFd)> {
         let socket_type = if use_seqpacket!() {
             libc::SOCK_SEQPACKET
         } else {
-            libc::SOCK_DGRAM
+            libc::SOCK_STREAM
         };
 
         if libc::socketpair(libc::AF_UNIX, socket_type, 0, sockets.as_mut_ptr()) == -1 {
