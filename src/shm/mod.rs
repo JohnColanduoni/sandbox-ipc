@@ -104,4 +104,10 @@ mod tests {
             assert_eq!(&slice[0..test_bytes.len()], test_bytes);
         }
     }
+
+    #[test]
+    fn big_shm() {
+        let memory = SharedMem::new(64 * 1024 * 1024).unwrap();
+        let _mapping = memory.map_ref(.., SharedMemAccess::ReadWrite).unwrap();
+    }
 }
