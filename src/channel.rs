@@ -238,3 +238,21 @@ impl ProcessToken {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::check_send;
+
+    #[test]
+    fn pre_raw_message_channel_is_send() {
+        let (a, _b) = PreRawMessageChannel::pair().unwrap();
+        check_send(&a);
+    }
+
+    #[test]
+    fn process_token_is_send() {
+        let token = ProcessToken::current().unwrap();
+        check_send(&token);
+    }
+}

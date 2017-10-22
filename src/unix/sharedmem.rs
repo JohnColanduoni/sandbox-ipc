@@ -17,7 +17,12 @@ pub(crate) struct SharedMem {
     size: usize,
 }
 
-pub(crate) struct SharedMemMap<T = SharedMem> where
+unsafe impl Send for SharedMem {
+}
+unsafe impl Sync for SharedMem {
+}
+
+pub(crate) struct SharedMemMap<T> where
     T: Borrow<::shm::SharedMem>
 {
     mem: T,
@@ -26,6 +31,13 @@ pub(crate) struct SharedMemMap<T = SharedMem> where
     pointer_offset: usize,
     access: SharedMemAccess,
 }
+
+unsafe impl<T> Send for SharedMemMap<T> where
+    T: Borrow<::shm::SharedMem> + Send,
+{ }
+unsafe impl<T> Sync for SharedMemMap<T> where
+    T: Borrow<::shm::SharedMem> + Send + Sync,
+{ }
 
 impl<T> Drop for SharedMemMap<T> where
     T: Borrow<::shm::SharedMem>,

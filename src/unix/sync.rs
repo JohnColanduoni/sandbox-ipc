@@ -29,6 +29,16 @@ impl<B, C> Drop for Mutex<B, C> where
     }
 }
 
+unsafe impl<B, C> Send for Mutex<B, C> where
+    B: Borrow<SharedMemMap<C>> + Send,
+    C: Borrow<SharedMem> + Send,
+{ }
+
+unsafe impl<B, C> Sync for Mutex<B, C> where
+    B: Borrow<SharedMemMap<C>> + Send + Sync,
+    C: Borrow<SharedMem> + Send + Sync,
+{ }
+
 pub(crate) struct MutexGuard<'a, B, C> where
     B: Borrow<SharedMemMap<C>> + 'a,
     C: Borrow<SharedMem> + 'a,

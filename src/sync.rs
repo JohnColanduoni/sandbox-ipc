@@ -16,6 +16,16 @@ pub struct Mutex<B, C> where
     poison: *const AtomicBool,
 }
 
+unsafe impl<B, C> Send for Mutex<B, C> where
+    B: Borrow<SharedMemMap<C>> + Send,
+    C: Borrow<SharedMem> + Send,
+{ }
+
+unsafe impl<B, C> Sync for Mutex<B, C> where
+    B: Borrow<SharedMemMap<C>> + Send + Sync,
+    C: Borrow<SharedMem> + Send + Sync,
+{ }
+
 pub struct MutexGuard<'a, B, C> where
     B: Borrow<SharedMemMap<C>> + 'a,
     C: Borrow<SharedMem> + 'a,
@@ -116,10 +126,19 @@ pub struct MutexHandle {
 mod tests {
     use super::*;
     use ::shm::{SharedMemAccess};
+    use ::check_send;
 
     use std::{mem, thread};
     use std::time::Duration;
     use std::sync::{Barrier, Arc};
+
+    #[test]
+    fn mutex_is_send() {
+        let memory = SharedMem::new(MUTEX_SHM_SIZE).unwrap();
+        let memory = memory.map(.. MUTEX_SHM_SIZE, SharedMemAccess::ReadWrite).unwrap();
+        let mutex = unsafe { Mutex::new_with_memory(memory, 0).unwrap() };
+        check_send(&mutex);
+    }
 
     #[test]
     fn uncontested_mutex_lock() {

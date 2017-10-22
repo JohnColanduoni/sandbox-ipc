@@ -54,6 +54,10 @@ fn align(x: usize, y: usize) -> usize {
     }
 }
 
+#[cfg(test)]
+fn check_send(_t: &Send) {
+}
+
 const CACHE_LINE: usize = 64;
 
 #[cfg(test)]

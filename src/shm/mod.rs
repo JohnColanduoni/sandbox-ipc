@@ -79,10 +79,23 @@ impl<T> SharedMemMap<T> where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::MessageChannel;
+    use ::{MessageChannel, check_send};
 
     use tokio;
     use futures::{Sink, Stream};
+
+    #[test]
+    fn shared_mem_map_is_send() {
+        let memory = SharedMem::new(4096).unwrap();
+        let memory = memory.map(.., SharedMemAccess::ReadWrite).unwrap();
+        check_send(&memory);
+    }
+
+    #[test]
+    fn shared_mem_is_send() {
+        let memory = SharedMem::new(4096).unwrap();
+        check_send(&memory);
+    }
 
     #[test]
     fn send_mem_same_process() {
