@@ -1,4 +1,5 @@
-use ::{SharedMem, SharedMemMap, align, CACHE_LINE};
+use ::{align, CACHE_LINE};
+use ::shm::{SharedMem, SharedMemMap};
 
 use std::{io, mem, thread, slice, usize, isize};
 use std::marker::PhantomData;
@@ -346,7 +347,7 @@ impl<'a, B, C> Deref for PopGuard<'a, B, C> where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::{SharedMemAccess};
+    use ::shm::{SharedMemAccess};
 
     use std::sync::{Arc, Barrier};
 

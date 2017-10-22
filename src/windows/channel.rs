@@ -17,7 +17,7 @@ use platform::kernel32::*;
 use winhandle::*;
 
 #[derive(Debug)]
-pub struct MessageChannel {
+pub(crate) struct MessageChannel {
     pipe: NamedPipe,
     server: bool,
     target_state: Arc<Mutex<HandleTargetState>>,
@@ -34,7 +34,7 @@ enum NamedPipe {
 }
 
 #[derive(Debug)]
-pub enum HandleTarget<H = WinHandle> {
+pub(crate) enum HandleTarget<H = WinHandle> {
     None,
     CurrentProcess,
     RemoteProcess(H),
@@ -71,12 +71,12 @@ impl MessageChannel {
     {
         self.send_to_child_custom(|to_be_sent| {
             let child = transmit_and_launch(command, to_be_sent)?;
-            Ok((WinHandle::cloned(&child)?, child))
+            Ok((ProcessToken::from_process_handle(&child)?, child))
         })
     }
 
     pub fn send_to_child_custom<F, T>(self, transmit_and_launch: F) -> io::Result<T> where
-        F: FnOnce(ChildMessageChannel) -> io::Result<(WinHandle, T)>,
+        F: FnOnce(ChildMessageChannel) -> io::Result<(ProcessToken, T)>,
     {
         let mut target_state = self.target_state.lock().unwrap();
 
@@ -108,9 +108,9 @@ impl MessageChannel {
         let (child_handle, t) = transmit_and_launch(to_be_sent)?;
 
         if self.server {
-            *target_state = HandleTargetState::ServerSentTo(child_handle);
+            *target_state = HandleTargetState::ServerSentTo((child_handle.0).0);
         } else {
-            *target_state = HandleTargetState::ClientSentTo(child_handle);
+            *target_state = HandleTargetState::ClientSentTo((child_handle.0).0);
         }
 
         Ok(t)
@@ -134,7 +134,7 @@ impl Channel for MessageChannel {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ChildMessageChannel {
+pub(crate) struct ChildMessageChannel {
     #[serde(with = "inheritable_channel_serialize")]
     channel_handle: WinHandle,
     #[serde(with = "inheritable_channel_serialize")]
@@ -182,9 +182,25 @@ impl ChildMessageChannel {
             }
         )
     }
+}
 
-    pub fn handles(&self) -> ChildMessageChannelHandles {
+pub trait ChildRawMessageChannelExt {
+    fn handles(&self) -> ChildMessageChannelHandles;
+}
+
+impl ChildRawMessageChannelExt for ChildMessageChannel {
+    fn handles(&self) -> ChildMessageChannelHandles {
         ChildMessageChannelHandles { channel_handle: self, index: 0 }
+    }
+}
+
+pub trait ChildMessageChannelExt {
+    fn handles(&self) -> ChildMessageChannelHandles;
+}
+
+impl ChildMessageChannelExt for ::ChildMessageChannel {
+    fn handles(&self) -> ChildMessageChannelHandles {
+        ChildMessageChannelHandles { channel_handle: &self.inner, index: 0 }
     }
 }
 
@@ -208,7 +224,7 @@ impl<'a> Iterator for ChildMessageChannelHandles<'a> {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct PreMessageChannel {
+pub(crate) struct PreMessageChannel {
     pipe: SendableWinHandle,
     server: bool,
 }
@@ -239,10 +255,10 @@ impl PreMessageChannel {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct ProcessToken(SendableWinHandle);
+pub(crate) struct ProcessToken(SendableWinHandle);
 
 impl ProcessToken {
-    pub fn this_process() -> io::Result<Self> {
+    pub fn current() -> io::Result<Self> {
         let handle = WinHandle::from_raw(unsafe { GetCurrentProcess() }).unwrap()
             .clone_ex(false, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?;
         Ok(ProcessToken(SendableWinHandle(handle)))
@@ -253,15 +269,28 @@ impl ProcessToken {
             (self.0).0.clone()?
         )))
     }
+}
 
-    pub unsafe fn from_process_handle<H>(handle: &H) -> io::Result<Self> where H: AsRawHandle {
-        Ok(ProcessToken(SendableWinHandle(
+pub trait ProcessTokenExt: Sized {
+    fn from_process_handle<H>(handle: &H) -> io::Result<Self> where H: AsRawHandle;
+    unsafe fn from_process_handle_raw(handle: HANDLE) -> io::Result<Self>;
+}
+
+impl ProcessTokenExt for ::ProcessToken {
+    fn from_process_handle<H>(handle: &H) -> io::Result<Self> where H: AsRawHandle {
+        Ok(::ProcessToken(ProcessToken(SendableWinHandle(
             WinHandle::cloned_ex(handle, false, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?
-        )))
+        ))))
+    }
+
+    unsafe fn from_process_handle_raw(handle: HANDLE) -> io::Result<Self> {
+        Ok(::ProcessToken(ProcessToken(SendableWinHandle(
+            WinHandle::cloned_raw_ex(handle, false, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?
+        ))))
     }
 }
 
-pub struct NamedMessageChannel {
+pub(crate) struct NamedMessageChannel {
     name: OsString,
     server_pipe: WinHandle,
     overlapped: Box<OVERLAPPED>,

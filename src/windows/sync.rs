@@ -1,4 +1,4 @@
-use ::{SharedMem, SharedMemMap};
+use ::shm::{SharedMem, SharedMemMap};
 use ::platform::SendableWinHandle;
 
 use std::{io, mem, ptr, thread, usize};

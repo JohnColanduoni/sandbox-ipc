@@ -1,4 +1,4 @@
-use ::SharedMemAccess;
+use ::shm::SharedMemAccess;
 use platform::SendableWinHandle;
 
 use std::{io, mem, ptr};
@@ -12,13 +12,13 @@ use platform::kernel32::*;
 use winhandle::*;
 
 #[derive(Debug)]
-pub struct SharedMem {
+pub(crate) struct SharedMem {
     handle: WinHandle,
     size: usize,
 }
 
-pub struct SharedMemMap<T = SharedMem> where
-    T: Borrow<::SharedMem>
+pub(crate) struct SharedMemMap<T = SharedMem> where
+    T: Borrow<::shm::SharedMem>
 {
     mem: T,
     pointer: *mut u8,
@@ -28,7 +28,7 @@ pub struct SharedMemMap<T = SharedMem> where
 }
 
 impl<T> Drop for SharedMemMap<T> where
-    T: Borrow<::SharedMem>,
+    T: Borrow<::shm::SharedMem>,
 {
     fn drop(&mut self) {
         unsafe {
@@ -73,7 +73,7 @@ impl SharedMem {
     }
 
     pub fn map_with<T, R>(t: T, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<T>> where
-        T: Borrow<::SharedMem>,
+        T: Borrow<::shm::SharedMem>,
         R: RangeArgument<usize>,
     {
         let raw_access = match access {
@@ -116,7 +116,7 @@ impl SharedMem {
 }
 
 impl<T> SharedMemMap<T> where
-    T: Borrow<::SharedMem>,
+    T: Borrow<::shm::SharedMem>,
 {
     pub fn unmap(self) -> io::Result<T> {
         unsafe {

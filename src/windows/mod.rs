@@ -1,7 +1,7 @@
-use ::SendableFile;
+use ::io::SendableFile;
 use ::ser::{SerializeWrapper, SerializeWrapperGuard};
 
-pub extern crate mio_named_pipes;
+extern crate mio_named_pipes;
 extern crate winapi;
 extern crate kernel32;
 extern crate advapi32;
@@ -11,7 +11,7 @@ mod sharedmem;
 mod sync;
 
 pub use self::channel::*;
-pub use self::sharedmem::*;
+pub(crate) use self::sharedmem::*;
 pub(crate) use self::sync::*;
 
 use std::{io, fs, mem, ptr};

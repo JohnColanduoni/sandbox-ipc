@@ -1,140 +1,10 @@
-use super::*;
-use ser::BincodeDatagram;
+use shm::{SharedMem, SharedMemMap, SharedMemAccess};
 
-use std::{io, fs, process, slice};
-use std::marker::PhantomData;
+use std::{io, fs, slice};
 use std::ops::Deref;
-use std::time::Duration;
 use std::io::Read;
-use std::ffi::OsStr;
 
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
-use futures::{Stream, Sink, Poll, StartSend};
-use tokio::reactor::{Handle as TokioHandle};
-
-pub struct MessageChannel<T, R> where
-    T: Serialize,
-    R: for<'de> Deserialize<'de>
-{
-    inner: BincodeDatagram<platform::MessageChannel, T, R, platform::ChannelSerializeWrapper>,
-    max_message_size: usize,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ChildMessageChannel {
-    inner: platform::ChildMessageChannel,
-    max_message_size: usize,
-}
-
-impl<T, R> MessageChannel<T, R> where
-    T: Serialize,
-    R: for<'de> Deserialize<'de>
-{
-    pub fn pair(tokio_handle: &TokioHandle, max_message_size: usize) -> io::Result<(Self, Self)> {
-        let (a, b) = platform::MessageChannel::pair(tokio_handle)?;
-
-        Ok((
-            MessageChannel { inner: BincodeDatagram::wrap(a, max_message_size), max_message_size },
-            MessageChannel { inner: BincodeDatagram::wrap(b, max_message_size), max_message_size },
-        ))
-    }
-
-    pub fn from_os(channel: platform::MessageChannel, max_message_size: usize) -> io::Result<Self> {
-        Ok(MessageChannel { inner: BincodeDatagram::wrap(channel, max_message_size), max_message_size })
-    }
-
-    pub fn send_to_child<F>(self, command: &mut process::Command, transmit_and_launch: F) -> io::Result<process::Child> where
-        F: FnOnce(&mut process::Command, &ChildMessageChannel) -> io::Result<process::Child>
-    {
-        let inner = self.inner.into_inner();
-        let max_message_size = self.max_message_size;
-        inner.send_to_child(command, |command, channel| {
-            let channel = ChildMessageChannel { inner: channel, max_message_size };
-            transmit_and_launch(command, &channel)
-        })
-    }
-}
-
-impl ChildMessageChannel {
-    pub fn into_channel<T, R>(self, tokio_loop: &TokioHandle) -> io::Result<MessageChannel<T, R>> where
-        T: Serialize,
-        R: for<'de> Deserialize<'de>
-    {
-        let inner = self.inner.into_channel(tokio_loop)?;
-
-        Ok(MessageChannel {
-            inner: BincodeDatagram::wrap(inner, self.max_message_size),
-            max_message_size: self.max_message_size,
-        })
-    }
-}
-
-impl<T, R> Stream for MessageChannel<T, R> where
-    T: Serialize,
-    R: for<'de> Deserialize<'de>,
-{
-    type Item = R;
-    type Error = io::Error;
-
-    fn poll(&mut self) -> Poll<Option<R>, io::Error> {
-        self.inner.poll()
-    }
-}
-
-impl<T, R> Sink for MessageChannel<T, R> where
-    T: Serialize,
-    R: for<'de> Deserialize<'de>,
-{
-    type SinkItem = T;
-    type SinkError = io::Error;
-
-    fn start_send(&mut self, item: T) -> StartSend<T, io::Error> {
-        self.inner.start_send(item)
-    }
-
-    fn poll_complete(&mut self) -> Poll<(), io::Error> {
-        self.inner.poll_complete()
-    }
-}
-
-pub struct NamedMessageChannel<T, R> where
-    T: Serialize,
-    R: for<'de> Deserialize<'de>
-{
-    inner: platform::NamedMessageChannel,
-    max_message_size: usize,
-    _phantom: PhantomData<(T, R)>,
-}
-
-impl<T, R> NamedMessageChannel<T, R> where
-    T: Serialize,
-    R: for<'de> Deserialize<'de>
-{
-    pub fn new(tokio_loop: &TokioHandle, max_message_size: usize) -> io::Result<Self> {
-        let inner = platform::NamedMessageChannel::new(tokio_loop)?;
-        Ok(NamedMessageChannel { inner, max_message_size, _phantom: PhantomData })
-    }
-
-    pub fn name(&self) -> &OsStr { self.inner.name() }
-
-    pub fn accept(self, timeout: Option<Duration>) -> io::Result<MessageChannel<T, R>> {
-        let inner = self.inner.accept(timeout)?;
-        Ok(MessageChannel {
-            inner: BincodeDatagram::wrap(inner, self.max_message_size),
-            max_message_size: self.max_message_size,
-        })
-    }
-
-    pub fn connect<N>(name: N, timeout: Option<Duration>, tokio_loop: &TokioHandle, max_message_size: usize) -> io::Result<MessageChannel<T, R>> where
-        N: AsRef<OsStr>,
-    {
-        let inner = platform::NamedMessageChannel::connect(name.as_ref(), timeout, tokio_loop)?;
-        Ok(MessageChannel {
-            inner: BincodeDatagram::wrap(inner, max_message_size),
-            max_message_size,
-        })
-    }
-}
 
 #[derive(Debug)]
 pub struct SendableFile<B = fs::File>(pub B) where
@@ -165,13 +35,14 @@ mod sendable_data_source_file {
     pub fn serialize<S>(f: &fs::File, serializer: S) -> Result<S::Ok, S::Error> where
         S: Serializer,
     {
-        SendableFile(f).serialize(serializer)
+        Serialize::serialize(&SendableFile(f), serializer)
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<fs::File, D::Error> where
         D: Deserializer<'de>,
     {
-        Ok(SendableFile::deserialize(deserializer)?.0)
+        let file: SendableFile = Deserialize::deserialize(deserializer)?;
+        Ok(file.0)
     }
 }
 
@@ -264,11 +135,13 @@ impl Deref for SendableDataSourceBytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::MessageChannel;
 
     use std::{fs, env};
     use std::io::{Write, Read, Seek, SeekFrom};
 
     use futures::{Sink, Stream};
+    use tokio;
 
     #[test]
     fn send_file_same_process() {

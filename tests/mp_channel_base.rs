@@ -4,8 +4,10 @@ use std::sync::Arc;
 use std::sync::atomic::{Ordering, AtomicBool};
 use std::time::Duration;
 
-use sandbox_ipc::{MessageChannel, SendableFile, Mutex as IpcMutex, MutexHandle as IpcMutexHandle};
-use sandbox_ipc::{SharedMem, SharedMemAccess, MUTEX_SHM_SIZE};
+use sandbox_ipc::{MessageChannel};
+use sandbox_ipc::io::{SendableFile};
+use sandbox_ipc::sync::{Mutex as IpcMutex, MutexHandle as IpcMutexHandle, MUTEX_SHM_SIZE};
+use sandbox_ipc::shm::{SharedMem, SharedMemAccess};
 use futures::prelude::*;
 use tokio_core::reactor::{Core as TokioLoop};
 
@@ -73,7 +75,7 @@ pub fn run_parent(mut tokio_loop: TokioLoop, channel: MessageChannel<Message, Me
         &*(memory_map.pointer().offset(MUTEX_SHM_SIZE as isize) as *const AtomicBool)
     };
     let mutex = unsafe { IpcMutex::new_with_memory(memory_map, 0) }.unwrap();
-
+    // Interact with shared mutex
     shared_mem.store(false, Ordering::SeqCst);
     let guard = mutex.lock();
     let channel = await!(tokio_loop => channel.send(Message::HaveAMutex(memory.clone(false).unwrap(), mutex.handle().unwrap())));

@@ -21,31 +21,29 @@ extern crate futures;
 #[cfg(target_os = "windows")]
 #[macro_use] extern crate winhandle;
 
-mod io;
-mod sync;
-mod shm;
-mod shm_queue;
+mod channel;
+pub mod io;
+pub mod sync;
+pub mod shm;
 
 mod ser;
 
-pub use io::*;
-pub use sync::*;
-pub use shm::*;
-pub use shm_queue::*;
+pub use channel::*;
+
+pub mod os {
+    #[cfg(target_os = "windows")]
+    pub mod windows {
+        pub use platform::*;
+    }
+}
 
 #[cfg(target_os = "windows")]
 #[path = "windows/mod.rs"]
-pub mod platform;
+mod platform;
 
 #[cfg(unix)]
 #[path = "unix/mod.rs"]
-pub mod platform;
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum SharedMemAccess {
-    Read,
-    ReadWrite,
-}
+mod platform;
 
 #[inline]
 fn align(x: usize, y: usize) -> usize {
@@ -65,9 +63,9 @@ mod tests {
     use std::{thread};
 
     #[test]
-    fn message_channel_pair() {
+    fn raw_message_channel_pair() {
         let reactor = tokio::reactor::Core::new().unwrap();
-        let (_a, _b) = platform::MessageChannel::pair(&reactor.handle()).unwrap();
+        let (_a, _b) = RawMessageChannel::pair(&reactor.handle()).unwrap();
     }
 
     #[test]

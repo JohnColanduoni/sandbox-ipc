@@ -1,9 +1,10 @@
-use ::SharedMemAccess;
 use platform;
 
 use std::{io};
 use std::collections::range::RangeArgument;
 use std::borrow::Borrow;
+
+pub mod queue;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SharedMem {
@@ -14,6 +15,12 @@ pub struct SharedMemMap<T = SharedMem> where
     T: Borrow<SharedMem>
 {
     inner: platform::SharedMemMap<T>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum SharedMemAccess {
+    Read,
+    ReadWrite,
 }
 
 impl SharedMem {
