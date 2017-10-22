@@ -1,4 +1,4 @@
-use ::shm::SharedMemAccess;
+use ::shm::{Access as SharedMemAccess};
 use platform::{ScopedFd};
 
 use std::{io, mem, ptr};

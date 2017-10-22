@@ -1,4 +1,4 @@
-use ::shm::{SharedMem, SharedMemMap, SharedMemAccess};
+use ::shm::{SharedMem, SharedMemMap, Access as SharedMemAccess};
 use platform;
 
 use std::{io, mem, thread};
@@ -125,7 +125,7 @@ pub struct MutexHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::shm::{SharedMemAccess};
+    use ::shm::{Access as SharedMemAccess};
     use ::check_send;
 
     use std::{mem, thread};

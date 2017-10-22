@@ -1,4 +1,4 @@
-use shm::{SharedMem, SharedMemMap, SharedMemAccess};
+use shm::{SharedMem, SharedMemMap, Access as SharedMemAccess};
 
 use std::{io, fs, slice};
 use std::ops::Deref;

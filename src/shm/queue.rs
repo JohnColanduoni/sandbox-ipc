@@ -11,7 +11,7 @@ use std::sync::atomic::{Ordering, AtomicUsize, AtomicBool};
 use uuid::Uuid;
 
 #[derive(Debug)]
-pub struct SharedMemQueue<B = SharedMemMap<SharedMem>, C = SharedMem> where
+pub struct Queue<B = SharedMemMap<SharedMem>, C = SharedMem> where
     B: Borrow<SharedMemMap<C>>,
     C: Borrow<SharedMem>,
 {
@@ -27,18 +27,18 @@ pub struct SharedMemQueue<B = SharedMemMap<SharedMem>, C = SharedMem> where
     _phantom: PhantomData<C>,
 }
 
-unsafe impl<B, C> Send for SharedMemQueue<B, C> where
+unsafe impl<B, C> Send for Queue<B, C> where
     B: Borrow<SharedMemMap<C>>,
     C: Borrow<SharedMem>,
 { }
 
-unsafe impl<B, C> Sync for SharedMemQueue<B, C> where
+unsafe impl<B, C> Sync for Queue<B, C> where
     B: Borrow<SharedMemMap<C>>,
     C: Borrow<SharedMem>,
 { }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct SharedMemQueueHandle {
+pub struct Handle {
     raw_offset: usize,
     item_size: usize,
     item_count: usize,
@@ -54,7 +54,7 @@ struct SharedMemQueueCtrl {
     poison: AtomicBool,
 }
 
-impl SharedMemQueue<SharedMemMap<SharedMem>, SharedMem> {
+impl Queue<SharedMemMap<SharedMem>, SharedMem> {
     pub fn required_size(item_size: usize, item_count: usize) -> usize {
         assert!(item_count > 0, "item count must be positive");
         assert!(item_size > 0, "item size must be positive");
@@ -66,12 +66,12 @@ impl SharedMemQueue<SharedMemMap<SharedMem>, SharedMem> {
 
 // The queue is laid out in memory as a sequence of items aligned to 
 // cache lines, followed by
-impl<B, C> SharedMemQueue<B, C> where
+impl<B, C> Queue<B, C> where
     B: Borrow<SharedMemMap<C>>,
     C: Borrow<SharedMem>,
 {
     pub unsafe fn new_with_memory(item_size: usize, item_count: usize, memory: B, offset: usize) -> io::Result<Self> {
-        let required_size = SharedMemQueue::required_size(item_size, item_count);
+        let required_size = Queue::required_size(item_size, item_count);
         if memory.borrow().len() < offset + required_size {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "insufficient space for shared memory queue of requested size"));
         }
@@ -91,7 +91,7 @@ impl<B, C> SharedMemQueue<B, C> where
             poison: AtomicBool::new(false),
         };
 
-        Ok(SharedMemQueue {
+        Ok(Queue {
             mem: memory,
             raw_offset,
             control: control as *const SharedMemQueueCtrl,
@@ -105,12 +105,12 @@ impl<B, C> SharedMemQueue<B, C> where
         })
     }
 
-    pub fn from_handle(handle: SharedMemQueueHandle, memory: B) -> io::Result<Self> {
+    pub fn from_handle(handle: Handle, memory: B) -> io::Result<Self> {
         if handle.shm_token != memory.borrow().token() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "the queue is not associated with the given shared memory"));
         }
-        if !(handle.raw_offset < memory.borrow().offset() &&
-                handle.raw_offset + SharedMemQueue::required_size(handle.item_size, handle.item_count) < memory.borrow().offset() + memory.borrow().len())
+        if !(handle.raw_offset <= memory.borrow().offset() &&
+                handle.raw_offset + Queue::required_size(handle.item_size, handle.item_count) <= memory.borrow().offset() + memory.borrow().len())
         {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "the queue is not contained within this shared memory mapping"));
         }
@@ -123,7 +123,7 @@ impl<B, C> SharedMemQueue<B, C> where
             control = items_base.offset((handle.item_count * item_offset) as isize) as *const SharedMemQueueCtrl;
         }
 
-        Ok(SharedMemQueue {
+        Ok(Queue {
             mem: memory,
             raw_offset: handle.raw_offset,
             control,
@@ -137,8 +137,8 @@ impl<B, C> SharedMemQueue<B, C> where
         })
     }
 
-    pub fn handle(&self) -> io::Result<SharedMemQueueHandle> {
-        Ok(SharedMemQueueHandle {
+    pub fn handle(&self) -> io::Result<Handle> {
+        Ok(Handle {
             raw_offset: self.raw_offset,
             item_size: self.item_size,
             item_count: self.item_count,
@@ -261,7 +261,7 @@ pub struct PushGuard<'a, B: 'a, C: 'a> where
     B: Borrow<SharedMemMap<C>>,
     C: Borrow<SharedMem>,
 {
-    queue: &'a SharedMemQueue<B, C>,
+    queue: &'a Queue<B, C>,
     send_index: usize,
     slice: &'a mut [u8],
 }
@@ -292,7 +292,7 @@ pub struct PopGuard<'a, B: 'a, C: 'a> where
     B: Borrow<SharedMemMap<C>>,
     C: Borrow<SharedMem>,
 {
-    queue: &'a SharedMemQueue<B, C>,
+    queue: &'a Queue<B, C>,
     recv_index: usize,
     slice: &'a [u8],
 }
@@ -356,14 +356,14 @@ impl<'a, B, C> Deref for PopGuard<'a, B, C> where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::shm::{SharedMemAccess};
+    use ::shm::{Access as SharedMemAccess};
 
     use std::sync::{Arc, Barrier};
 
-    fn make_queue(item_size: usize, item_count: usize) -> SharedMemQueue<SharedMemMap<SharedMem>, SharedMem> {
-        let mem = SharedMem::new(SharedMemQueue::required_size(item_size, item_count)).unwrap();
+    fn make_queue(item_size: usize, item_count: usize) -> Queue<SharedMemMap<SharedMem>, SharedMem> {
+        let mem = SharedMem::new(Queue::required_size(item_size, item_count)).unwrap();
         let mem_map = mem.map(.., SharedMemAccess::ReadWrite).unwrap();
-        unsafe { SharedMemQueue::new_with_memory(item_size, item_count, mem_map, 0).unwrap() }
+        unsafe { Queue::new_with_memory(item_size, item_count, mem_map, 0).unwrap() }
     }
 
     #[test]

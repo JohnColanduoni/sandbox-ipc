@@ -41,3 +41,7 @@ harness = false
 [[test]]
 name = "named_channel"
 harness = false
+
+[[bench]]
+name = "shm_queue"
+harness = false

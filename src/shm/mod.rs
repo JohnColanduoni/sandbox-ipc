@@ -8,6 +8,8 @@ use uuid::Uuid;
 
 pub mod queue;
 
+pub use self::queue::Queue;
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SharedMem {
     pub(crate) inner: platform::SharedMem,
@@ -21,7 +23,7 @@ pub struct SharedMemMap<T = SharedMem> where
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum SharedMemAccess {
+pub enum Access {
     Read,
     ReadWrite,
 }
@@ -35,24 +37,24 @@ impl SharedMem {
 
     pub fn size(&self) -> usize { self.inner.size() }
 
-    pub fn clone(&self, access: SharedMemAccess) -> io::Result<SharedMem> {
+    pub fn clone(&self, access: Access) -> io::Result<SharedMem> {
         let inner = self.inner.clone(access)?;
         Ok(SharedMem { inner, token: self.token })
     }
 
-    pub fn map<R>(self, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<Self>> where
+    pub fn map<R>(self, range: R, access: Access) -> io::Result<SharedMemMap<Self>> where
         R: RangeArgument<usize>,
     {
         Self::map_with(self, range, access)
     }
 
-    pub fn map_ref<R>(&self, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<&Self>> where
+    pub fn map_ref<R>(&self, range: R, access: Access) -> io::Result<SharedMemMap<&Self>> where
         R: RangeArgument<usize>,
     {
         Self::map_with(self, range, access)
     }
 
-    pub fn map_with<T, R>(t: T, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<T>> where
+    pub fn map_with<T, R>(t: T, range: R, access: Access) -> io::Result<SharedMemMap<T>> where
         T: Borrow<SharedMem>,
         R: RangeArgument<usize>,
     {
@@ -70,7 +72,7 @@ impl<T> SharedMemMap<T> where
 
     pub unsafe fn pointer(&self) -> *mut u8 { self.inner.pointer() }
     pub fn len(&self) -> usize { self.inner.len() }
-    pub fn access(&self) -> SharedMemAccess { self.inner.access() }
+    pub fn access(&self) -> Access { self.inner.access() }
     pub fn offset(&self) -> usize { self.inner.offset() }
 
     pub(crate) fn token(&self) -> Uuid { self.inner.object().token }
@@ -87,7 +89,7 @@ mod tests {
     #[test]
     fn shared_mem_map_is_send() {
         let memory = SharedMem::new(4096).unwrap();
-        let memory = memory.map(.., SharedMemAccess::ReadWrite).unwrap();
+        let memory = memory.map(.., Access::ReadWrite).unwrap();
         check_send(&memory);
     }
 
@@ -106,7 +108,7 @@ mod tests {
 
         let memory = SharedMem::new(0x1000).unwrap();
         unsafe {
-            let mapping = memory.map_ref(.., SharedMemAccess::ReadWrite).unwrap();
+            let mapping = memory.map_ref(.., Access::ReadWrite).unwrap();
             let slice = ::std::slice::from_raw_parts_mut(mapping.pointer(), mapping.len());
 
             slice[0..test_bytes.len()].copy_from_slice(test_bytes);
@@ -117,7 +119,7 @@ mod tests {
         let memory: SharedMem = message.unwrap();
 
         unsafe {
-            let mapping = memory.map_ref(.., SharedMemAccess::Read).unwrap();
+            let mapping = memory.map_ref(.., Access::Read).unwrap();
             let slice = ::std::slice::from_raw_parts_mut(mapping.pointer(), mapping.len());
 
             assert_eq!(&slice[0..test_bytes.len()], test_bytes);
@@ -127,6 +129,6 @@ mod tests {
     #[test]
     fn big_shm() {
         let memory = SharedMem::new(64 * 1024 * 1024).unwrap();
-        let _mapping = memory.map_ref(.., SharedMemAccess::ReadWrite).unwrap();
+        let _mapping = memory.map_ref(.., Access::ReadWrite).unwrap();
     }
 }

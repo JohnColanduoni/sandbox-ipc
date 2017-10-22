@@ -7,7 +7,7 @@ use std::time::Duration;
 use sandbox_ipc::{MessageChannel};
 use sandbox_ipc::io::{SendableFile};
 use sandbox_ipc::sync::{Mutex as IpcMutex, MutexHandle as IpcMutexHandle, MUTEX_SHM_SIZE};
-use sandbox_ipc::shm::{SharedMem, SharedMemAccess};
+use sandbox_ipc::shm::{SharedMem, Access as SharedMemAccess};
 use futures::prelude::*;
 use tokio_core::reactor::{Core as TokioLoop};
 
