@@ -1,5 +1,5 @@
 #![feature(collections_range)]
-#![feature(const_size_of)]
+#![feature(const_size_of, const_fn)]
 
 #[macro_use] extern crate log;
 extern crate uuid;
