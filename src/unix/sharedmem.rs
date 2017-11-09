@@ -1,11 +1,10 @@
-use ::shm::{Access as SharedMemAccess};
+use ::shm::{Access as SharedMemAccess, RangeArgument};
 use platform::{ScopedFd};
 
-use std::{io, mem, ptr};
+use std::{io, ptr};
 use std::collections::Bound;
-use std::collections::range::RangeArgument;
-use std::borrow::Borrow;
 use std::ffi::CString;
+use std::os::raw::c_int;
 
 use uuid::Uuid;
 use platform::libc;
@@ -22,29 +21,24 @@ unsafe impl Send for SharedMem {
 unsafe impl Sync for SharedMem {
 }
 
-pub(crate) struct SharedMemMap<T> where
-    T: Borrow<::shm::SharedMem>
-{
-    mem: T,
-    pointer: *mut u8,
-    len: usize,
-    pointer_offset: usize,
+#[derive(Debug)]
+pub(crate) struct SharedMemMap {
+    mapping_pointer: *mut u8,
+    user_pointer: *mut u8,
+    mapping_len: usize,
+    user_len: usize,
+    mapping_offset: usize,
+    user_offset: usize,
     access: SharedMemAccess,
 }
 
-unsafe impl<T> Send for SharedMemMap<T> where
-    T: Borrow<::shm::SharedMem> + Send,
-{ }
-unsafe impl<T> Sync for SharedMemMap<T> where
-    T: Borrow<::shm::SharedMem> + Send + Sync,
-{ }
+unsafe impl Send for SharedMemMap {}
+unsafe impl Sync for SharedMemMap {}
 
-impl<T> Drop for SharedMemMap<T> where
-    T: Borrow<::shm::SharedMem>,
-{
+impl Drop for SharedMemMap {
     fn drop(&mut self) {
         unsafe {
-            if libc::munmap(self.pointer as _, self.len) < 0 {
+            if libc::munmap(self.mapping_pointer as _, self.mapping_len) < 0 {
                 error!("munmap failed: {}", io::Error::last_os_error());
             }
         }
@@ -62,21 +56,23 @@ impl SharedMem {
             if fd < 0 {
                 return Err(io::Error::last_os_error());
             }
+            let fd = ScopedFd(fd);
             let ro_fd = libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0o700);
             if ro_fd < 0 {
                 return Err(io::Error::last_os_error());
             }
+            let ro_fd = ScopedFd(ro_fd);
             if libc::shm_unlink(name.as_ptr()) < 0 {
                 return Err(io::Error::last_os_error());
             }
 
-            if libc::ftruncate(fd, size as _) < 0 {
+            if libc::ftruncate(fd.0, size as _) < 0 {
                 return Err(io::Error::last_os_error());
             }
 
             Ok(SharedMem {
-                rw_fd: Some(ScopedFd(fd)),
-                ro_fd: ScopedFd(ro_fd),
+                rw_fd: Some(fd),
+                ro_fd,
                 size,
             })
         }
@@ -120,14 +116,13 @@ impl SharedMem {
         }
     }
 
-    pub fn map_with<T, R>(t: T, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<T>> where
-        T: Borrow<::shm::SharedMem>,
+    pub fn map<R>(&self, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap> where
         R: RangeArgument<usize>,
     {
         let (prot, fd) = match access {
-            SharedMemAccess::Read => (libc::PROT_READ, t.borrow().inner.ro_fd.0),
+            SharedMemAccess::Read => (libc::PROT_READ, self.ro_fd.0),
             SharedMemAccess::ReadWrite => {
-                if let Some(rw_fd) = t.borrow().inner.rw_fd.as_ref() {
+                if let Some(rw_fd) = self.rw_fd.as_ref() {
                     (libc::PROT_READ | libc::PROT_WRITE, rw_fd.0)
                 } else {
                     return Err(io::Error::new(io::ErrorKind::PermissionDenied, "this shared memory handle is read-only"));
@@ -136,54 +131,61 @@ impl SharedMem {
         };
 
         let offset = match range.start() {
-            Bound::Included(i) => *i,
-            Bound::Excluded(i) => i + 1,
-            Bound::Unbounded => 0,
+            Bound::Included(i) => Some(*i),
+            Bound::Excluded(i) => i.checked_add(1),
+            Bound::Unbounded => Some(0),
         };
-        let len = match range.start() {
-            Bound::Included(i) => i + 1,
-            Bound::Excluded(i) => *i,
-            Bound::Unbounded => t.borrow().size(),
+        let end = match range.start() {
+            Bound::Included(i) => i.checked_add(1),
+            Bound::Excluded(i) => Some(*i),
+            Bound::Unbounded => Some(self.size),
         };
 
-        let ptr = unsafe { libc::mmap(ptr::null_mut(), len as _, prot, libc::MAP_SHARED, fd, offset as _) };
-        if ptr == libc::MAP_FAILED {
+        let (offset, end) = match (offset, end) {
+            (Some(offset), Some(end)) if offset <= end && end <= self.size => (offset, end),
+            _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, "shared memory map range is out of bounds")),
+        };
+
+        let page_size = *PAGE_SIZE;
+        let user_offset_shift = offset % page_size;
+        let user_end_shift = match end % page_size {
+            0 => 0,
+            x => page_size - x,
+        };
+        let mapping_offset = offset - user_offset_shift;
+        let mapping_len = end + user_end_shift - mapping_offset;
+
+        let mapping_ptr = unsafe { libc::mmap(ptr::null_mut(), mapping_len as _, prot, libc::MAP_SHARED, fd, mapping_offset as _) };
+        if mapping_ptr == libc::MAP_FAILED {
             return Err(io::Error::last_os_error());
         }
 
         Ok(SharedMemMap {
-            mem: t,
-            pointer: ptr as *mut u8,
-            len: len,
-            pointer_offset: offset,
+            mapping_pointer: mapping_ptr as *mut u8,
+            user_pointer: unsafe { (mapping_ptr as *mut u8).offset(user_offset_shift as isize) },
+            mapping_len,
+            user_len: end - offset,
+            mapping_offset,
+            user_offset: offset,
             access,
         })
     }
 }
 
-impl<T> SharedMemMap<T> where
-    T: Borrow<::shm::SharedMem>,
-{
-    pub fn unmap(self) -> io::Result<T> {
-        unsafe {
-            if libc::munmap(self.pointer as _, self.len) < 0 {
-                return Err(io::Error::last_os_error());
-            }
-
-            // We have to do these gymnastics to prevent the destructor from running
-            let memory = ptr::read(&self.mem);
-            mem::forget(self);
-
-            Ok(memory)
-        }
-    }
-
-    pub unsafe fn pointer(&self) -> *mut u8 { self.pointer }
-    pub fn len(&self) -> usize { self.len }
+impl SharedMemMap {
+    pub unsafe fn pointer(&self) -> *mut u8 { self.user_pointer }
+    pub fn len(&self) -> usize { self.user_len }
     pub fn access(&self) -> SharedMemAccess { self.access }
-    pub fn offset(&self) -> usize { self.pointer_offset }
+    pub fn offset(&self) -> usize { self.user_offset }
+}
 
-    pub fn object(&self) -> &::shm::SharedMem {
-        self.mem.borrow()
-    }
+lazy_static! {
+    static ref PAGE_SIZE: usize = unsafe {
+        getpagesize() as usize
+    };
+}
+
+#[link = "c"]
+extern "C" {
+    fn getpagesize() -> c_int;
 }

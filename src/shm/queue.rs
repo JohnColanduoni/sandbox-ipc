@@ -1,4 +1,4 @@
-use ::{align, CACHE_LINE};
+use ::{align, CACHE_LINE, USIZE_SIZE};
 use ::shm::{SharedMemMap};
 
 use std::{io, mem, thread, slice, usize, isize};
@@ -35,13 +35,13 @@ pub struct Handle {
 #[repr(packed)]
 struct SharedMemQueueCtrl {
     next_send_index: AtomicUsize,
-    _padding1: [u8; CACHE_LINE - mem::size_of::<usize>()],
+    _padding1: [u8; CACHE_LINE - USIZE_SIZE],
     last_sent_index: AtomicUsize,
-    _padding2: [u8; CACHE_LINE - mem::size_of::<usize>()],
+    _padding2: [u8; CACHE_LINE - USIZE_SIZE],
     next_recv_index: AtomicUsize,
-    _padding3: [u8; CACHE_LINE - mem::size_of::<usize>()],
+    _padding3: [u8; CACHE_LINE - USIZE_SIZE],
     last_recvd_index: AtomicUsize,
-    _padding4: [u8; CACHE_LINE - mem::size_of::<usize>()],
+    _padding4: [u8; CACHE_LINE - USIZE_SIZE],
     poison: AtomicBool,
 }
 
@@ -75,10 +75,10 @@ impl Queue {
             next_recv_index: AtomicUsize::new(0),
             last_recvd_index: AtomicUsize::new(usize::MAX),
             poison: AtomicBool::new(false),
-            _padding1: [0; CACHE_LINE - mem::size_of::<usize>()],
-            _padding2: [0; CACHE_LINE - mem::size_of::<usize>()],
-            _padding3: [0; CACHE_LINE - mem::size_of::<usize>()],
-            _padding4: [0; CACHE_LINE - mem::size_of::<usize>()],
+            _padding1: [0; CACHE_LINE - USIZE_SIZE],
+            _padding2: [0; CACHE_LINE - USIZE_SIZE],
+            _padding3: [0; CACHE_LINE - USIZE_SIZE],
+            _padding4: [0; CACHE_LINE - USIZE_SIZE],
         };
 
         Ok(Queue {

@@ -61,9 +61,6 @@
 //! ```
 //! 
 
-#![feature(collections_range)]
-#![feature(const_size_of, const_fn)]
-
 #[macro_use] extern crate log;
 extern crate uuid;
 extern crate rand;
@@ -124,7 +121,13 @@ fn align(x: usize, y: usize) -> usize {
 fn check_send(_t: &Send) {
 }
 
+// TODO: specialize for platform
 const CACHE_LINE: usize = 64;
+
+#[cfg(target_pointer_width = "32")]
+const USIZE_SIZE: usize = 4;
+#[cfg(target_pointer_width = "64")]
+const USIZE_SIZE: usize = 8;
 
 #[cfg(test)]
 mod tests {

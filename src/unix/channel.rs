@@ -35,28 +35,36 @@ impl MessageChannel {
         ))
     }
 
-    pub fn send_to_child<F>(self, command: &mut process::Command, transmit_and_launch: F) -> io::Result<process::Child> where
+    pub fn establish_with_child<F>(command: &mut process::Command, tokio_loop: &TokioHandle, transmit_and_launch: F) -> io::Result<(Self, process::Child)> where
         F: FnOnce(&mut process::Command, ChildMessageChannel) -> io::Result<process::Child>
     {
-        let fd = self.socket.get_ref().0;
-        clear_cloexec(fd)?;
+        let (a, b) = raw_socketpair()?;
+        let _guard = CloexecGuard::new(&b.0);
 
-        let channel = ChildMessageChannel { fd };
+        let channel = ChildMessageChannel { fd: b.0 };
 
-        transmit_and_launch(command, channel)
+        let child = transmit_and_launch(command, channel)?;
+
+        Ok((
+            MessageChannel { socket: PollEvented::new(a, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS), },
+            child,
+        ))
     }
 
-    pub fn send_to_child_custom<F, T>(self, transmit_and_launch: F) -> io::Result<T> where
-        F: FnOnce(ChildMessageChannel) -> io::Result<(ProcessToken, T)>
+    pub fn establish_with_child_custom<F, T>(tokio_loop: &TokioHandle, transmit_and_launch: F) -> io::Result<(Self, T)> where
+        F: FnOnce(ChildMessageChannel) -> io::Result<(ProcessHandle, T)>
     {
-        let fd = self.socket.get_ref().0;
-        clear_cloexec(fd)?;
+        let (a, b) = raw_socketpair()?;
+        let _guard = CloexecGuard::new(&b.0);
 
-        let channel = ChildMessageChannel { fd };
+        let channel = ChildMessageChannel { fd: b.0 };
 
         let (_token, t) = transmit_and_launch(channel)?;
 
-        Ok(t)
+        Ok((
+            MessageChannel { socket: PollEvented::new(a, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS), },
+            t,
+        ))
     }
 }
 
@@ -156,22 +164,27 @@ impl PreMessageChannel {
         ))
     }
 
-    pub fn into_channel(self, _remote_process: ProcessToken, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
+    pub fn into_channel(self, _remote_process: ProcessHandle, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
+        Ok(MessageChannel { socket: PollEvented::new(self.fd, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) })
+    }
+
+    pub fn into_sealed_channel(self, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
+        // TODO: seal the channel
         Ok(MessageChannel { socket: PollEvented::new(self.fd, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) })
     }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct ProcessToken {
+pub struct ProcessHandle {
 }
 
-impl ProcessToken {
+impl ProcessHandle {
     pub fn current() -> io::Result<Self> {
-        Ok(ProcessToken {})
+        Ok(ProcessHandle {})
     }
 
     pub fn clone(&self) -> io::Result<Self> {
-        Ok(ProcessToken {})
+        Ok(ProcessHandle {})
     }
 }
 
@@ -284,5 +297,23 @@ fn raw_socketpair() -> io::Result<(ScopedFd, ScopedFd)> {
         }
 
         Ok((ScopedFd(sockets[0]), ScopedFd(sockets[1])))
+    }
+}
+
+struct CloexecGuard<'a>(&'a RawFd);
+
+impl<'a> Drop for CloexecGuard<'a> {
+    fn drop(&mut self) {
+        if let Err(err) = set_cloexec(*self.0) {
+            error!("failed to set CLOEXEC: {}", err);
+        }
+    }
+}
+
+impl<'a> CloexecGuard<'a> {
+    pub fn new(fd: &'a RawFd) -> io::Result<Self> {
+        clear_cloexec(*fd)?;
+
+        Ok(CloexecGuard(fd))
     }
 }

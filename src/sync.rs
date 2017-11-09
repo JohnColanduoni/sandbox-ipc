@@ -1,3 +1,4 @@
+use ::{USIZE_SIZE};
 use ::shm::{SharedMemMap, Access as SharedMemAccess};
 use platform;
 
@@ -23,7 +24,7 @@ pub struct MutexGuard<'a> {
 }
 
 /// The amount of shared memory space required to hold a `Mutex`.
-pub const MUTEX_SHM_SIZE: usize = platform::MUTEX_SHM_SIZE + mem::size_of::<usize>();
+pub const MUTEX_SHM_SIZE: usize = platform::MUTEX_SHM_SIZE + USIZE_SIZE;
 
 // On top of the OS-level mutex, we add a usize (protected by the mutex) that signals
 // that the lock is poisoned (possibly by a thread in another process).

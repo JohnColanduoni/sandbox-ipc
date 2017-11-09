@@ -1,4 +1,4 @@
-use ::io::SendableFile;
+use ::io::{SendableFile, SendableSocket};
 use ser::{SerializeWrapper, SerializeWrapperGuard};
 
 extern crate libc;
@@ -92,6 +92,27 @@ impl<'de> Deserialize<'de> for SendableFile {
     {
         let handle = SendableFd::deserialize(deserializer)?;
         Ok(SendableFile(unsafe { fs::File::from_raw_fd(handle.0) }))
+    }
+}
+
+impl<B> Serialize for SendableSocket<B> where
+    B: AsRawFd,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where S: Serializer
+    {
+        SendableFd(self.0.as_raw_fd()).serialize(serializer)
+    }
+}
+
+impl<'de, B> Deserialize<'de> for SendableSocket<B> where
+    B: FromRawFd,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where D: Deserializer<'de>
+    {
+        let handle = SendableFd::deserialize(deserializer)?;
+        Ok(SendableSocket(unsafe { B::from_raw_fd(handle.0) }))
     }
 }
 

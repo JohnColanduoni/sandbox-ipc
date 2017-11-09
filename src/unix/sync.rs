@@ -1,27 +1,20 @@
-use ::shm::{SharedMem, SharedMemMap};
+use ::{USIZE_SIZE};
+use ::shm::{SharedMemMap};
 
 use std::{io, mem, thread, usize};
-use std::marker::PhantomData;
 use std::borrow::Borrow;
 use std::sync::atomic::{Ordering, AtomicUsize};
 
 use platform::libc;
 
-pub(crate) struct Mutex<B, C> where
-    B: Borrow<SharedMemMap<C>>,
-    C: Borrow<SharedMem>,
-{
-    mem: B,
+pub(crate) struct Mutex {
+    mem: SharedMemMap,
     raw_offset: usize,
     refcount: *const AtomicUsize,
     pthread_mutex: *mut libc::pthread_mutex_t,
-    _phantom: PhantomData<C>,
 }
 
-impl<B, C> Drop for Mutex<B, C> where
-    B: Borrow<SharedMemMap<C>>,
-    C: Borrow<SharedMem>,
-{
+impl Drop for Mutex {
     fn drop(&mut self) {
         if unsafe { (*self.refcount).fetch_sub(1, Ordering::SeqCst) } == 1 {
             unsafe { libc::pthread_mutex_destroy(self.pthread_mutex); }
@@ -29,35 +22,30 @@ impl<B, C> Drop for Mutex<B, C> where
     }
 }
 
-unsafe impl<B, C> Send for Mutex<B, C> where
-    B: Borrow<SharedMemMap<C>> + Send,
-    C: Borrow<SharedMem> + Send,
-{ }
+unsafe impl Send for Mutex {}
 
-unsafe impl<B, C> Sync for Mutex<B, C> where
-    B: Borrow<SharedMemMap<C>> + Send + Sync,
-    C: Borrow<SharedMem> + Send + Sync,
-{ }
+unsafe impl Sync for Mutex {}
 
-pub(crate) struct MutexGuard<'a, B, C> where
-    B: Borrow<SharedMemMap<C>> + 'a,
-    C: Borrow<SharedMem> + 'a,
-{
-    mutex: &'a Mutex<B, C>,
+pub(crate) struct MutexGuard<'a> {
+    mutex: &'a Mutex,
 }
 
-pub(crate) const MUTEX_SHM_SIZE: usize = mem::size_of::<usize>() + mem::size_of::<libc::pthread_mutex_t>();
+pub(crate) const MUTEX_SHM_SIZE: usize = USIZE_SIZE + PTHREAD_MUTEX_SIZE_BOUND;
 
-impl<B, C> Mutex<B, C> where
-    B: Borrow<SharedMemMap<C>>,
-    C: Borrow<SharedMem>,
-{
-    pub unsafe fn new_with_memory(memory: B, offset: usize) -> io::Result<Self> {
-        assert!(memory.borrow().len() >= offset + MUTEX_SHM_SIZE, "insufficient space for mutex");
-        assert!((memory.borrow().pointer() as usize + offset) % mem::size_of::<usize>() == 0, "shared memory for IPC mutex must be aligned");
-        let raw_offset = memory.borrow().offset() + offset;
+// We use a bound on the pthread mutex size because its size is platform specific
+// TODO: remove once const fn is stable
+const PTHREAD_MUTEX_SIZE_BOUND: usize = 128 - USIZE_SIZE;
 
-        let refcount = memory.borrow().pointer().offset(offset as isize) as *const AtomicUsize;
+impl Mutex {
+    pub unsafe fn new_with_memory(memory: SharedMemMap, offset: usize) -> io::Result<Self> {
+        assert!(memory.len() >= offset + MUTEX_SHM_SIZE, "insufficient space for mutex");
+        assert!((memory.pointer() as usize + offset) % mem::size_of::<usize>() == 0, "shared memory for IPC mutex must be aligned");
+
+        assert!(mem::size_of::<libc::pthread_mutex_t>() <= PTHREAD_MUTEX_SIZE_BOUND, "pthread_mutex_t too large on this platform");
+
+        let raw_offset = memory.offset() + offset;
+
+        let refcount = memory.pointer().offset(offset as isize) as *const AtomicUsize;
         (*refcount).store(1, Ordering::SeqCst);
 
         let pthread_mutex = refcount.offset(1) as *mut libc::pthread_mutex_t;
@@ -81,15 +69,16 @@ impl<B, C> Mutex<B, C> where
             raw_offset,
             refcount,
             pthread_mutex,
-            _phantom: PhantomData,
         })
     }
 
-    pub unsafe fn from_handle(handle: MutexHandle, memory: B, offset: usize) -> io::Result<Self> {
-        assert!(memory.borrow().len() >= offset + MUTEX_SHM_SIZE, "insufficient space for mutex");
-        assert!((memory.borrow().pointer() as usize + offset) % mem::size_of::<usize>() == 0, "shared memory for IPC mutex must be aligned");
+    pub unsafe fn from_handle(handle: MutexHandle, memory: SharedMemMap, offset: usize) -> io::Result<Self> {
+        assert!(memory.len() >= offset + MUTEX_SHM_SIZE, "insufficient space for mutex");
+        assert!((memory.pointer() as usize + offset) % mem::size_of::<usize>() == 0, "shared memory for IPC mutex must be aligned");
 
-        let refcount = memory.borrow().pointer().offset(offset as isize) as *const AtomicUsize;
+        assert!(mem::size_of::<libc::pthread_mutex_t>() <= PTHREAD_MUTEX_SIZE_BOUND, "pthread_mutex_t too large on this platform");
+
+        let refcount = memory.pointer().offset(offset as isize) as *const AtomicUsize;
         (*refcount).fetch_add(1, Ordering::SeqCst);
         let pthread_mutex = refcount.offset(1) as *mut libc::pthread_mutex_t;
 
@@ -98,11 +87,10 @@ impl<B, C> Mutex<B, C> where
             raw_offset: handle.raw_offset,
             refcount,
             pthread_mutex,
-            _phantom: PhantomData,
         })
     }
 
-    pub fn lock(&self) -> MutexGuard<B, C> {
+    pub fn lock(&self) -> MutexGuard {
         match unsafe { libc::pthread_mutex_lock(self.pthread_mutex) } {
             0 => MutexGuard { mutex: self },
             err => panic!("pthread_mutex_lock failed: {}", io::Error::from_raw_os_error(err)),
@@ -115,15 +103,12 @@ impl<B, C> Mutex<B, C> where
         })
     }
 
-    pub fn memory(&self) -> &SharedMemMap<C> {
+    pub fn memory(&self) -> &SharedMemMap {
         self.mem.borrow()
     }
 }
 
-impl<'a, B, C> Drop for MutexGuard<'a, B, C> where
-    B: Borrow<SharedMemMap<C>>,
-    C: Borrow<SharedMem>,
-{
+impl<'a> Drop for MutexGuard<'a> {
     fn drop(&mut self) {
         match unsafe { libc::pthread_mutex_unlock(self.mutex.pthread_mutex) } {
             0 => {},
