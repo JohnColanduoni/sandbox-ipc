@@ -1,6 +1,5 @@
 use std::{mem, fs, env, thread};
 use std::io::{Read, Write, Seek, SeekFrom};
-use std::sync::Arc;
 use std::sync::atomic::{Ordering, AtomicBool};
 use std::time::Duration;
 
@@ -70,7 +69,7 @@ pub fn run_parent(mut tokio_loop: TokioLoop, channel: MessageChannel<Message, Me
 
     // Create a shared mutex
     let memory = SharedMem::new(4096).unwrap();
-    let memory_map = memory.map_ref(.., SharedMemAccess::ReadWrite).unwrap();
+    let memory_map = memory.map(.., SharedMemAccess::ReadWrite).unwrap();
     let shared_mem = unsafe {
         &*(memory_map.pointer().offset(MUTEX_SHM_SIZE as isize) as *const AtomicBool)
     };
@@ -78,7 +77,7 @@ pub fn run_parent(mut tokio_loop: TokioLoop, channel: MessageChannel<Message, Me
     // Interact with shared mutex
     shared_mem.store(false, Ordering::SeqCst);
     let guard = mutex.lock();
-    let channel = await!(tokio_loop => channel.send(Message::HaveAMutex(memory.clone(SharedMemAccess::ReadWrite).unwrap(), mutex.handle().unwrap())));
+    let channel = await!(tokio_loop => channel.send(Message::HaveAMutex(memory.clone_with_access(SharedMemAccess::ReadWrite).unwrap(), mutex.handle().unwrap())));
     println!("parent sent mutex");
     thread::sleep(Duration::from_millis(100));
     assert_eq!(false, shared_mem.load(Ordering::SeqCst));
@@ -132,8 +131,8 @@ pub fn run_child(mut tokio_loop: TokioLoop, channel: MessageChannel<Message, Mes
     let (message, channel) = await!(tokio_loop => channel.into_future().map_err(|(err, _)| err));
     let _channel = if let Some(Message::HaveAMutex(memory, mutex)) = message {
         println!("child received mutex");
-        let memory_map = Arc::new(memory.map_ref(.., SharedMemAccess::ReadWrite).unwrap());
-        let mutex = IpcMutex::from_handle(mutex, memory_map.clone()).unwrap();
+        let memory_map = memory.map(.., SharedMemAccess::ReadWrite).unwrap();
+        let mutex = unsafe { IpcMutex::from_handle(mutex, memory_map.clone()).unwrap() };
         let shared_mem = unsafe {
             &*(memory_map.pointer().offset(MUTEX_SHM_SIZE as isize) as *const AtomicBool)
         };

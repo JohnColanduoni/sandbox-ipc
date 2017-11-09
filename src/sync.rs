@@ -1,4 +1,4 @@
-use ::shm::{SharedMem, SharedMemMap, Access as SharedMemAccess};
+use ::shm::{SharedMemMap, Access as SharedMemAccess};
 use platform;
 
 use std::{io, mem, thread};
@@ -8,45 +8,42 @@ use std::sync::atomic::{Ordering, AtomicBool};
 
 use uuid::Uuid;
 
-pub struct Mutex<B, C> where
-    B: Borrow<SharedMemMap<C>>,
-    C: Borrow<SharedMem>,
-{
-    pub(crate) inner: platform::Mutex<B, C>,
+/// An analogue of `std::sync::Mutex` which can operate within shared memory.
+pub struct Mutex {
+    pub(crate) inner: platform::Mutex,
     poison: *const AtomicBool,
 }
 
-unsafe impl<B, C> Send for Mutex<B, C> where
-    B: Borrow<SharedMemMap<C>> + Send,
-    C: Borrow<SharedMem> + Send,
-{ }
+unsafe impl Send for Mutex {}
+unsafe impl Sync for Mutex {}
 
-unsafe impl<B, C> Sync for Mutex<B, C> where
-    B: Borrow<SharedMemMap<C>> + Send + Sync,
-    C: Borrow<SharedMem> + Send + Sync,
-{ }
-
-pub struct MutexGuard<'a, B, C> where
-    B: Borrow<SharedMemMap<C>> + 'a,
-    C: Borrow<SharedMem> + 'a,
-{
-    mutex: &'a Mutex<B, C>,
-    _inner: platform::MutexGuard<'a, B, C>,
+pub struct MutexGuard<'a> {
+    mutex: &'a Mutex,
+    _inner: platform::MutexGuard<'a>,
 }
 
+/// The amount of shared memory space required to hold a `Mutex`.
 pub const MUTEX_SHM_SIZE: usize = platform::MUTEX_SHM_SIZE + mem::size_of::<usize>();
 
 // On top of the OS-level mutex, we add a usize (protected by the mutex) that signals
 // that the lock is poisoned (possibly by a thread in another process).
-impl<B, C> Mutex<B, C> where
-    B: Borrow<SharedMemMap<C>>,
-    C: Borrow<SharedMem>,
-{
-    pub unsafe fn new_with_memory(memory: B, offset: usize) -> io::Result<Self> {
+impl Mutex {
+    /// Creates a brand new `Mutex` in the given shared memory location.
+    /// 
+    /// This can *only* be used to create a brand new `Mutex`. It cannot be used to create a handle to an
+    /// existing `Mutex` already created at the given location in shared memory. To send the `Mutex` to another
+    /// process you must send the shared memory region and a `MutexHandle` produced via the `handle()` function.
+    /// 
+    /// # Panics
+    /// 
+    /// This function will panic if there is not `MUTEX_SHM_SIZE` bytes of memory available at the
+    /// given `offset`, or if the memory is not aligned to a pointer width within the shared memory section.
+    pub unsafe fn new_with_memory(memory: SharedMemMap, offset: usize) -> io::Result<Self> {
         Self::with_inner(memory, offset, |memory| platform::Mutex::new_with_memory(memory, offset))
     }
 
-    pub fn from_handle(handle: MutexHandle, memory: B) -> io::Result<Self> {
+    /// Establishes a new reference to a `Mutex` previously created with `new_with_memory`.
+    pub unsafe fn from_handle(handle: MutexHandle, memory: SharedMemMap) -> io::Result<Self> {
         if memory.borrow().token() != handle.shm_token {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "the mutex is not associated with the given shared memory"));
         }
@@ -55,19 +52,19 @@ impl<B, C> Mutex<B, C> where
         if memory.borrow().len() < local_offset + MUTEX_SHM_SIZE {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "mapping does not contain memory of shared mutex"));
         }
-        unsafe { Self::with_inner(memory, local_offset, move |memory| platform::Mutex::from_handle(handle.inner, memory, local_offset)) }
+        Self::with_inner(memory, local_offset, move |memory| platform::Mutex::from_handle(handle.inner, memory, local_offset))
     }
 
-    pub(crate) unsafe fn with_inner<F>(memory: B, offset: usize, f: F) -> io::Result<Self> where
-        F: FnOnce(B) -> io::Result<platform::Mutex<B, C>>,
+    pub(crate) unsafe fn with_inner<F>(memory: SharedMemMap, offset: usize, f: F) -> io::Result<Self> where
+        F: FnOnce(SharedMemMap) -> io::Result<platform::Mutex>,
     {
-        if memory.borrow().len() < offset + MUTEX_SHM_SIZE {
+        if memory.len() < offset + MUTEX_SHM_SIZE {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "out of range offset for mutex shared memory"));
         }
-        if (memory.borrow().pointer() as usize + offset) % mem::size_of::<usize>() != 0 {
+        if (memory.pointer() as usize + offset) % mem::size_of::<usize>() != 0 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "memory for mutex must be aligned"));
         }
-        if memory.borrow().access() != SharedMemAccess::ReadWrite {
+        if memory.access() != SharedMemAccess::ReadWrite {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "memory for mutex must be read-write"));
         }
         let poison = memory.borrow().pointer().offset((offset + platform::MUTEX_SHM_SIZE) as isize) as *const AtomicBool;
@@ -79,7 +76,9 @@ impl<B, C> Mutex<B, C> where
         })
     }
 
-    pub fn lock(&self) -> LockResult<MutexGuard<B, C>> {
+    /// Acquires an exclusive lock on the `Mutex`, including any instances created from the same
+    /// `MutexHandle`.
+    pub fn lock(&self) -> LockResult<MutexGuard> {
         let guard = self.inner.lock();
         let guard = MutexGuard {
             mutex: self,
@@ -94,6 +93,7 @@ impl<B, C> Mutex<B, C> where
         }
     }
 
+    /// Creates a new handle to the `Mutex` that can be transmitted to other processes.
     pub fn handle(&self) -> io::Result<MutexHandle> {
         let inner = self.inner.handle()?;
         Ok(MutexHandle { inner, shm_token: self.inner.memory().token() })
@@ -104,10 +104,7 @@ impl<B, C> Mutex<B, C> where
     }
 }
 
-impl<'a, B, C> Drop for MutexGuard<'a, B, C> where
-    B: Borrow<SharedMemMap<C>>,
-    C: Borrow<SharedMem>,
-{
+impl<'a> Drop for MutexGuard<'a> {
     fn drop(&mut self) {
         if thread::panicking() {
             // Indicate we are panicking, both to this instance and possible other instances in different processes
@@ -116,6 +113,10 @@ impl<'a, B, C> Drop for MutexGuard<'a, B, C> where
     }
 }
 
+/// A handle to a `Mutex` that exists in shared memory.
+/// 
+/// This can be sent over any medium capable of transmitting OS resources (e.g. `MessageChannel`). To reconstitute a working `Mutex`,
+/// a reference to the `SharedMem` holding it must be transmitted as well.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MutexHandle {
     inner: platform::MutexHandle,
@@ -125,7 +126,7 @@ pub struct MutexHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::shm::{Access as SharedMemAccess};
+    use ::shm::{Access as SharedMemAccess, SharedMem};
     use ::check_send;
 
     use std::{mem, thread};
@@ -158,8 +159,8 @@ mod tests {
         let barrier = Arc::new(Barrier::new(2));
         let value = Arc::new(AtomicBool::new(false));
 
-        let memory = Arc::new(SharedMem::new(MUTEX_SHM_SIZE).unwrap());
-        let memory_map = SharedMem::map_with(memory.clone(), .., SharedMemAccess::ReadWrite).unwrap();
+        let memory = SharedMem::new(MUTEX_SHM_SIZE).unwrap();
+        let memory_map = memory.map(.., SharedMemAccess::ReadWrite).unwrap();
         let mutex = unsafe { Mutex::new_with_memory(memory_map, 0).unwrap() };
 
         let guard = mutex.lock().unwrap();
@@ -168,8 +169,8 @@ mod tests {
             let handle = mutex.handle().unwrap();
             let value = value.clone();
             move || {
-                let memory_map = SharedMem::map_with(memory.clone(), .., SharedMemAccess::ReadWrite).unwrap();
-                let mutex = Mutex::from_handle(handle, memory_map).unwrap();
+                let memory_map = memory.map(.., SharedMemAccess::ReadWrite).unwrap();
+                let mutex = unsafe { Mutex::from_handle(handle, memory_map).unwrap() };
                 barrier.wait();
                 let _guard = mutex.lock().unwrap();
                 value.store(true, Ordering::SeqCst);

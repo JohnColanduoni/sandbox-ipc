@@ -1,9 +1,8 @@
 use ::{CACHE_LINE};
-use ::shm::{SharedMem, SharedMemMap};
+use ::shm::{SharedMemMap};
 use ::platform::SendableWinHandle;
 
 use std::{io, mem, ptr, thread, usize};
-use std::marker::PhantomData;
 use std::borrow::Borrow;
 use std::sync::atomic::{Ordering, AtomicUsize};
 
@@ -11,22 +10,15 @@ use platform::winapi::*;
 use platform::kernel32::*;
 use winhandle::*;
 
-pub(crate) struct Mutex<B, C> where
-    B: Borrow<SharedMemMap<C>>,
-    C: Borrow<SharedMem>,
-{
-    mem: B,
+pub(crate) struct Mutex {
+    mem: SharedMemMap,
     raw_offset: usize,
     atomic: *const AtomicUsize,
     semaphore: WinHandle,
-    _phantom: PhantomData<C>,
 }
 
-pub(crate) struct MutexGuard<'a, B, C> where
-    B: Borrow<SharedMemMap<C>> + 'a,
-    C: Borrow<SharedMem> + 'a,
-{
-    mutex: &'a Mutex<B, C>,
+pub(crate) struct MutexGuard<'a> {
+    mutex: &'a Mutex,
 }
 
 pub(crate) const MUTEX_SHM_SIZE: usize = CACHE_LINE;
@@ -38,11 +30,8 @@ pub(crate) const MUTEX_SHM_SIZE: usize = CACHE_LINE;
 // on the semaphore. When releasing the mutex via a fetch-sub operation, the releasing thread
 // checks if the count before the operation was greater than one, and if so performs a release
 // operation on the semaphore.
-impl<B, C> Mutex<B, C> where
-    B: Borrow<SharedMemMap<C>>,
-    C: Borrow<SharedMem>,
-{
-    pub unsafe fn new_with_memory(memory: B, offset: usize) -> io::Result<Self> {
+impl Mutex {
+    pub unsafe fn new_with_memory(memory: SharedMemMap, offset: usize) -> io::Result<Self> {
         assert!(memory.borrow().len() >= offset + MUTEX_SHM_SIZE, "insufficient space for mutex");
         assert!((memory.borrow().pointer() as usize + offset) % mem::size_of::<usize>() == 0, "shared memory for IPC mutex must be aligned");
         let atomic = memory.borrow().pointer().offset(offset as isize) as *const AtomicUsize;
@@ -61,11 +50,10 @@ impl<B, C> Mutex<B, C> where
             raw_offset,
             atomic,
             semaphore,
-            _phantom: PhantomData,
         })
     }
 
-    pub unsafe fn from_handle(handle: MutexHandle, memory: B, offset: usize) -> io::Result<Self> {
+    pub unsafe fn from_handle(handle: MutexHandle, memory: SharedMemMap, offset: usize) -> io::Result<Self> {
         assert!(memory.borrow().len() >= offset + MUTEX_SHM_SIZE, "insufficient space for mutex");
         assert!((memory.borrow().pointer() as usize + offset) % mem::size_of::<usize>() == 0, "shared memory for IPC mutex must be aligned");
         let atomic = memory.borrow().pointer().offset(offset as isize) as *const AtomicUsize;
@@ -75,11 +63,10 @@ impl<B, C> Mutex<B, C> where
             raw_offset: handle.raw_offset,
             atomic,
             semaphore: handle.semaphore.0,
-            _phantom: PhantomData,
         })
     }
 
-    pub fn lock(&self) -> MutexGuard<B, C> {
+    pub fn lock(&self) -> MutexGuard {
         // TODO: can probably relax SeqCst here, but shouldn't try to until we can test
         // on an architecture with weak memory model (e.g. ARM)
         let shared_atomic = self.shared_atomic();
@@ -118,15 +105,12 @@ impl<B, C> Mutex<B, C> where
         unsafe { &*self.atomic }
     }
 
-    pub(crate) fn memory(&self) -> &::shm::SharedMemMap<C> {
-        self.mem.borrow()
+    pub(crate) fn memory(&self) -> &::shm::SharedMemMap {
+        &self.mem
     }
 }
 
-impl<'a, B, C> Drop for MutexGuard<'a, B, C> where
-    B: Borrow<SharedMemMap<C>>,
-    C: Borrow<SharedMem>,
-{
+impl<'a> Drop for MutexGuard<'a> {
     fn drop(&mut self) {
         let shared_atomic = self.mutex.shared_atomic();
         match shared_atomic.fetch_sub(1, Ordering::SeqCst)  {

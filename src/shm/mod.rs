@@ -1,8 +1,9 @@
 use platform;
 
 use std::{io};
-use std::collections::range::RangeArgument;
-use std::borrow::Borrow;
+use std::ops::{Range, RangeFull, RangeTo, RangeFrom};
+use std::collections::Bound;
+use std::sync::Arc;
 
 use uuid::Uuid;
 
@@ -10,16 +11,23 @@ pub mod queue;
 
 pub use self::queue::Queue;
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct SharedMem {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SharedMem(Arc<_SharedMem>);
+
+#[derive(Debug)]
+#[derive(Serialize, Deserialize)]
+struct _SharedMem {
     pub(crate) inner: platform::SharedMem,
     pub(crate) token: Uuid,
 }
 
-pub struct SharedMemMap<T = SharedMem> where
-    T: Borrow<SharedMem>
-{
-    inner: platform::SharedMemMap<T>,
+#[derive(Clone, Debug)]
+pub struct SharedMemMap(Arc<_SharedMemMap>);
+
+#[derive(Debug)]
+struct _SharedMemMap {
+    object: SharedMem,
+    inner: platform::SharedMemMap,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -32,50 +40,57 @@ impl SharedMem {
     pub fn new(size: usize) -> io::Result<SharedMem> {
         let inner = platform::SharedMem::new(size)?;
         let token = Uuid::new_v4();
-        Ok(SharedMem { inner, token })
+        Ok(SharedMem(Arc::new(_SharedMem { inner, token })))
     }
 
-    pub fn size(&self) -> usize { self.inner.size() }
+    pub fn size(&self) -> usize { self.0.inner.size() }
 
-    pub fn clone(&self, access: Access) -> io::Result<SharedMem> {
-        let inner = self.inner.clone(access)?;
-        Ok(SharedMem { inner, token: self.token })
+    pub fn clone_with_access(&self, access: Access) -> io::Result<SharedMem> {
+        let inner = self.0.inner.clone(access)?;
+        Ok(SharedMem(Arc::new(_SharedMem { inner, token: self.0.token })))
     }
 
-    pub fn map<R>(self, range: R, access: Access) -> io::Result<SharedMemMap<Self>> where
-        R: RangeArgument<usize>,
-    {
-        Self::map_with(self, range, access)
-    }
-
-    pub fn map_ref<R>(&self, range: R, access: Access) -> io::Result<SharedMemMap<&Self>> where
-        R: RangeArgument<usize>,
-    {
-        Self::map_with(self, range, access)
-    }
-
-    pub fn map_with<T, R>(t: T, range: R, access: Access) -> io::Result<SharedMemMap<T>> where
-        T: Borrow<SharedMem>,
-        R: RangeArgument<usize>,
-    {
-        let inner = platform::SharedMem::map_with(t, range, access)?;
-        Ok(SharedMemMap { inner })
+    pub fn map<R: RangeArgument<usize>>(&self, range: R, access: Access) -> io::Result<SharedMemMap> where {
+        let inner = self.0.inner.map(range, access)?;
+        Ok(SharedMemMap(Arc::new(_SharedMemMap {
+            object: self.clone(),
+            inner,
+        })))
     }
 }
 
-impl<T> SharedMemMap<T> where
-    T: Borrow<SharedMem>,
-{
-    pub fn unmap(self) -> io::Result<T> {
-        self.inner.unmap()
-    }
+impl SharedMemMap {
+    pub unsafe fn pointer(&self) -> *mut u8 { self.0.inner.pointer() }
+    pub fn len(&self) -> usize { self.0.inner.len() }
+    pub fn access(&self) -> Access { self.0.inner.access() }
+    pub fn offset(&self) -> usize { self.0.inner.offset() }
 
-    pub unsafe fn pointer(&self) -> *mut u8 { self.inner.pointer() }
-    pub fn len(&self) -> usize { self.inner.len() }
-    pub fn access(&self) -> Access { self.inner.access() }
-    pub fn offset(&self) -> usize { self.inner.offset() }
+    pub(crate) fn token(&self) -> Uuid { self.0.object.0.token }
+}
 
-    pub(crate) fn token(&self) -> Uuid { self.inner.object().token }
+pub trait RangeArgument<T> {
+    fn start(&self) -> Bound<&T>;
+    fn end(&self) -> Bound<&T>;
+}
+
+impl<T> RangeArgument<T> for RangeFull {
+    fn start(&self) -> Bound<&T> { Bound::Unbounded }
+    fn end(&self) -> Bound<&T> { Bound::Unbounded }
+}
+
+impl<T> RangeArgument<T> for RangeFrom<T> {
+    fn start(&self) -> Bound<&T> { Bound::Included(&self.start) }
+    fn end(&self) -> Bound<&T> { Bound::Unbounded }
+}
+
+impl<T> RangeArgument<T> for RangeTo<T> {
+    fn start(&self) -> Bound<&T> { Bound::Unbounded }
+    fn end(&self) -> Bound<&T> { Bound::Excluded(&self.end) }
+}
+
+impl<T> RangeArgument<T> for Range<T> {
+    fn start(&self) -> Bound<&T> { Bound::Included(&self.start) }
+    fn end(&self) -> Bound<&T> { Bound::Excluded(&self.end) }
 }
 
 #[cfg(test)]
@@ -108,7 +123,7 @@ mod tests {
 
         let memory = SharedMem::new(0x1000).unwrap();
         unsafe {
-            let mapping = memory.map_ref(.., Access::ReadWrite).unwrap();
+            let mapping = memory.map(.., Access::ReadWrite).unwrap();
             let slice = ::std::slice::from_raw_parts_mut(mapping.pointer(), mapping.len());
 
             slice[0..test_bytes.len()].copy_from_slice(test_bytes);
@@ -119,7 +134,7 @@ mod tests {
         let memory: SharedMem = message.unwrap();
 
         unsafe {
-            let mapping = memory.map_ref(.., Access::Read).unwrap();
+            let mapping = memory.map(.., Access::Read).unwrap();
             let slice = ::std::slice::from_raw_parts_mut(mapping.pointer(), mapping.len());
 
             assert_eq!(&slice[0..test_bytes.len()], test_bytes);
@@ -129,6 +144,6 @@ mod tests {
     #[test]
     fn big_shm() {
         let memory = SharedMem::new(64 * 1024 * 1024).unwrap();
-        let _mapping = memory.map_ref(.., Access::ReadWrite).unwrap();
+        let _mapping = memory.map(.., Access::ReadWrite).unwrap();
     }
 }

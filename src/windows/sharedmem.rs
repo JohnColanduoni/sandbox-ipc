@@ -1,10 +1,8 @@
-use ::shm::{Access as SharedMemAccess};
+use ::shm::{Access as SharedMemAccess, RangeArgument};
 use platform::SendableWinHandle;
 
 use std::{io, mem, ptr};
 use std::collections::Bound;
-use std::collections::range::RangeArgument;
-use std::borrow::Borrow;
 
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use platform::winapi::*;
@@ -17,29 +15,23 @@ pub(crate) struct SharedMem {
     size: usize,
 }
 
-pub(crate) struct SharedMemMap<T = SharedMem> where
-    T: Borrow<::shm::SharedMem>
-{
-    mem: T,
-    pointer: *mut u8,
-    len: usize,
+#[derive(Debug)]
+pub(crate) struct SharedMemMap {
+    mapping_pointer: *mut u8,
+    mapping_len: usize,
+    user_pointer: *mut u8,
+    user_len: usize,
     access: SharedMemAccess,
-    pointer_offset: usize,
+    user_offset: usize,
 }
 
-unsafe impl<T> Send for SharedMemMap<T> where
-    T: Borrow<::shm::SharedMem> + Send,
-{ }
-unsafe impl<T> Sync for SharedMemMap<T> where
-    T: Borrow<::shm::SharedMem> + Send + Sync,
-{ }
+unsafe impl Send for SharedMemMap {}
+unsafe impl Sync for SharedMemMap {}
 
-impl<T> Drop for SharedMemMap<T> where
-    T: Borrow<::shm::SharedMem>,
-{
+impl Drop for SharedMemMap {
     fn drop(&mut self) {
         unsafe {
-            if UnmapViewOfFile(self.pointer as _) == FALSE {
+            if UnmapViewOfFile(self.mapping_pointer as _) == FALSE {
                 error!("UnmapViewOfFile failed: {}", io::Error::last_os_error());
             }
         }
@@ -82,75 +74,64 @@ impl SharedMem {
         }
     }
 
-    pub fn map_with<T, R>(t: T, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap<T>> where
-        T: Borrow<::shm::SharedMem>,
-        R: RangeArgument<usize>,
-    {
+    pub fn map<R: RangeArgument<usize>>(&self, range: R, access: SharedMemAccess) -> io::Result<SharedMemMap> {
         let raw_access = match access {
             SharedMemAccess::Read => FILE_MAP_READ,
             SharedMemAccess::ReadWrite => FILE_MAP_WRITE,
         };
 
         let offset = match range.start() {
-            Bound::Included(i) => *i,
-            Bound::Excluded(i) => i + 1,
-            Bound::Unbounded => 0,
+            Bound::Included(i) => Some(*i),
+            Bound::Excluded(i) => i.checked_add(1),
+            Bound::Unbounded => Some(0),
         };
-        let len = match range.start() {
-            Bound::Included(i) => i + 1,
-            Bound::Excluded(i) => *i,
-            Bound::Unbounded => t.borrow().size(),
+        let len = offset.and_then(|offset| match range.end() {
+            Bound::Included(i) => i.checked_add(1).and_then(|x| x.checked_sub(offset)),
+            Bound::Excluded(i) => i.checked_sub(offset),
+            Bound::Unbounded => self.size().checked_sub(offset),
+        });
+
+        let (offset, len) = match (offset, len) {
+            (Some(offset), Some(len)) if offset + len <= self.size => (offset, len),
+            _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, "requested memory map range is out of bounds")),
         };
+
+        // The offset must be a multiple of the page size
+        let mapping_offset = match offset % *PAGE_SIZE {
+            0 => offset,
+            m => offset - m,
+        };
+        let mapping_len = len + offset - mapping_offset;
 
         unsafe {
             let addr = MapViewOfFile(
-                t.borrow().inner.handle.get(),
+                self.handle.get(),
                 raw_access,
-                (offset >> 32) as DWORD,
-                (offset & 0xFFFFFFFF) as DWORD,
-                len as SIZE_T
+                (mapping_offset >> 32) as DWORD,
+                (mapping_offset & 0xFFFFFFFF) as DWORD,
+                mapping_len as SIZE_T
             );
             if addr.is_null() {
                 return Err(io::Error::last_os_error());
             }
 
             Ok(SharedMemMap {
-                mem: t,
-                pointer: addr as _,
-                len,
+                mapping_pointer: addr as _,
+                mapping_len,
+                user_pointer: (addr as *mut u8).offset((offset - mapping_offset) as isize),
+                user_len: len,
                 access,
-                pointer_offset: offset,
+                user_offset: offset,
             })
         }
     }
 }
 
-impl<T> SharedMemMap<T> where
-    T: Borrow<::shm::SharedMem>,
-{
-    pub fn unmap(self) -> io::Result<T> {
-        unsafe {
-            let pointer = self.pointer;
-            // We have to do these gymnastics to prevent the destructor from running
-            let memory = ptr::read(&self.mem);
-            mem::forget(self);
-
-            winapi_bool_call!(UnmapViewOfFile(
-                pointer as _
-            ))?;
-
-            Ok(memory)
-        }
-    }
-
-    pub unsafe fn pointer(&self) -> *mut u8 { self.pointer }
-    pub fn len(&self) -> usize { self.len }
+impl SharedMemMap {
+    pub unsafe fn pointer(&self) -> *mut u8 { self.user_pointer }
+    pub fn len(&self) -> usize { self.user_len }
     pub fn access(&self) -> SharedMemAccess { self.access }
-    pub fn offset(&self) -> usize { self.pointer_offset }
-
-    pub(crate) fn object(&self) -> &::shm::SharedMem {
-        self.mem.borrow()
-    }
+    pub fn offset(&self) -> usize { self.user_offset }
 }
 
 impl Serialize for SharedMem {
@@ -168,4 +149,12 @@ impl<'de> Deserialize<'de> for SharedMem {
         let (handle, size): (SendableWinHandle, usize) = Deserialize::deserialize(deserializer)?;
         Ok(SharedMem { handle: handle.0, size })
     }
+}
+
+lazy_static! {
+    static ref PAGE_SIZE: usize = unsafe {
+        let mut system_info: SYSTEM_INFO = mem::zeroed();
+        GetSystemInfo(&mut system_info);
+        system_info.dwPageSize as usize
+    };
 }

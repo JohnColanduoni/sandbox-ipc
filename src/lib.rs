@@ -1,9 +1,73 @@
+//! Convenient and powerful cross-platform IPC primitives, designed with privilege separation in mind.
+//!
+//! The core of this crate is the `MessageChannel`. It not only automatically serializes and deserializes messages via
+//! `serde`, but can even send OS resources like files to other processes. To get started, spawn a child process with
+//! `MessageChannel::establish_with_child` and transmit the initial channel with an environment variable:
+//!  
+//! ```rust,no_run
+//! extern crate futures;
+//! extern crate tokio_core;
+//! extern crate sandbox_ipc as ipc;
+//! extern crate serde_json as json;
+//! 
+//! use std::{fs, env};
+//! use std::process::Command;
+//! use std::io::Write;
+//!
+//! use ipc::io::SendableFile;
+//! use futures::prelude::*; 
+//! use tokio_core::reactor::Core;
+//! 
+//! const CHANNEL_ENV_VAR: &str = "ENV_IPC_CHANNEL";
+//! 
+//! fn main() {
+//!     // IO operations are done within a Tokio event loop
+//!     let mut core = Core::new().unwrap();
+//!     let handle = core.handle();
+//!     
+//!     let mut child_command = Command::new("some_child_executable");
+//!     let (channel, child) = ipc::MessageChannel::<SendableFile, i32>::establish_with_child(
+//!         &mut child_command, 8192, &handle, |command, child_channel| {
+//!             command
+//!                 .env(CHANNEL_ENV_VAR, json::to_string(child_channel).unwrap())
+//!                 .spawn()
+//!         }
+//!     ).unwrap();
+//! 
+//!     let secret_file = fs::File::create("secret_file.txt").unwrap();
+//!     let channel = core.run(channel.send(SendableFile(secret_file))).unwrap();
+//! 
+//!     let (reason, _channel) = core.run(channel.into_future()).map_err(|(err, _)| err).unwrap();
+//!     let reason = reason.unwrap();
+//!     assert_eq!(42i32, reason);
+//! }
+//! 
+//! fn child_main() {
+//!     let mut core = Core::new().unwrap();
+//!     let handle = core.handle();
+//! 
+//!     let channel: ipc::ChildMessageChannel = 
+//!         json::from_str(&env::var(CHANNEL_ENV_VAR).unwrap()).unwrap();
+//!     let channel = channel.into_channel::<i32, SendableFile>(&handle).unwrap();
+//! 
+//!     let (secret_file, channel) = core.run(channel.into_future())
+//!         .map_err(|(err, _)| err).unwrap();
+//!     let SendableFile(mut secret_file) = secret_file.unwrap();
+//! 
+//!     write!(&mut secret_file, "psst").unwrap();
+//! 
+//!     let _channel = core.run(channel.send(42i32)).unwrap();
+//! }
+//! ```
+//! 
+
 #![feature(collections_range)]
 #![feature(const_size_of, const_fn)]
 
 #[macro_use] extern crate log;
 extern crate uuid;
 extern crate rand;
+#[macro_use] extern crate lazy_static;
 
 extern crate serde;
 #[macro_use] extern crate serde_derive;

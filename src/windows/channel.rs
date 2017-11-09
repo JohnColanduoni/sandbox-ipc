@@ -2,7 +2,6 @@ use super::{Channel, SendableWinHandle};
 
 use std::{io, mem, ptr, process};
 use std::time::Duration;
-use std::sync::{Arc, Mutex};
 use std::os::windows::prelude::*;
 use std::ffi::{OsString, OsStr};
 
@@ -10,7 +9,7 @@ use uuid::Uuid;
 use serde::{Serializer, Deserializer};
 use tokio::{AsyncRead, AsyncWrite};
 use tokio::reactor::{PollEvented, Handle as TokioHandle};
-use futures::{Poll, Async};
+use futures::{Poll};
 use platform::mio_named_pipes::NamedPipe as MioNamedPipe;
 use platform::winapi::*;
 use platform::kernel32::*;
@@ -18,19 +17,9 @@ use winhandle::*;
 
 #[derive(Debug)]
 pub(crate) struct MessageChannel {
-    pipe: NamedPipe,
+    pipe: PollEvented<MioNamedPipe>,
     server: bool,
-    target_state: Arc<Mutex<HandleTargetState>>,
-}
-
-// On Windows, adding a kernel object to an IOCP (which Tokio does) causes it to break when sent to another process.
-// To deal with this, we need to delay actually adding the named pipe to the event loop so it can be successfully sent as
-// long as reading/writing was never attempted on it. This also allows us to give a good error message if this requirement
-// is broken.
-#[derive(Debug)]
-enum NamedPipe {
-    Unregistered { pipe: WinHandle, tokio: TokioHandle },
-    Registered { pipe: PollEvented<MioNamedPipe> }
+    target: HandleTarget,
 }
 
 #[derive(Debug)]
@@ -41,95 +30,60 @@ pub(crate) enum HandleTarget<H = WinHandle> {
     RemoteProcess(H),
 }
 
-#[derive(Debug)]
-enum HandleTargetState {
-    Unsent,
-    ServerSentTo(WinHandle),
-    ClientSentTo(WinHandle),
-}
-
 impl MessageChannel {
-    pub fn pair(handle: &TokioHandle) -> io::Result<(MessageChannel, MessageChannel)> {
+    pub fn pair(tokio_loop: &TokioHandle) -> io::Result<(MessageChannel, MessageChannel)> {
         let (server_pipe, client_pipe) = raw_pipe_pair(PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_REJECT_REMOTE_CLIENTS)?;
-        let state = Arc::new(Mutex::new(HandleTargetState::Unsent));
 
         Ok((
             MessageChannel {
-                pipe: NamedPipe::Unregistered { pipe: server_pipe, tokio: handle.clone() },
+                pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(server_pipe.into_raw()) }, tokio_loop)?,
                 server: true,
-                target_state: state.clone(),
+                target: HandleTarget::CurrentProcess,
             },
             MessageChannel {
-                pipe: NamedPipe::Unregistered { pipe: client_pipe, tokio: handle.clone() },
+                pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(client_pipe.into_raw()) }, tokio_loop)?,
                 server: false,
-                target_state: state.clone(),
+                target: HandleTarget::CurrentProcess,
             },
         ))
     }
 
-    pub fn send_to_child<F>(self, command: &mut process::Command, transmit_and_launch: F) -> io::Result<process::Child> where
+    pub fn establish_with_child<F>(command: &mut process::Command, tokio_loop: &TokioHandle, transmit_and_launch: F) -> io::Result<(Self, process::Child)> where
         F: FnOnce(&mut process::Command, ChildMessageChannel) -> io::Result<process::Child>
     {
-        self.send_to_child_custom(|to_be_sent| {
+        Self::establish_with_child_custom(tokio_loop, |to_be_sent| {
             let child = transmit_and_launch(command, to_be_sent)?;
-            Ok((::ProcessToken::from_process_handle(&child)?.0, child))
+            Ok((::ProcessHandle::from_windows_handle(&child)?.0, child))
         })
     }
 
-    pub fn send_to_child_custom<F, T>(self, transmit_and_launch: F) -> io::Result<T> where
-        F: FnOnce(ChildMessageChannel) -> io::Result<(ProcessToken, T)>,
+    pub fn establish_with_child_custom<F, T>(tokio_loop: &TokioHandle, transmit_and_launch: F) -> io::Result<(Self, T)> where
+        F: FnOnce(ChildMessageChannel) -> io::Result<(ProcessHandle, T)>,
     {
-        let mut target_state = self.target_state.lock().unwrap();
-
-        let inheritable_process_handle = match *target_state {
-            HandleTargetState::Unsent => WinHandle::from_raw(unsafe { GetCurrentProcess() }).unwrap().clone_ex(true, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?,
-            HandleTargetState::ClientSentTo(_) => {
-                assert!(self.server);
-                unimplemented!()
-            },
-            HandleTargetState::ServerSentTo(_) => {
-                assert!(!self.server);
-                unimplemented!()
-            },
-        };
-
-        let inheritable_pipe = match self.pipe {
-            NamedPipe::Unregistered { ref pipe, .. } => {
-                pipe.clone_ex(true, ClonedHandleAccess::Same)?
-            },
-            NamedPipe::Registered { .. } => return Err(io::Error::new(io::ErrorKind::Other, "IO was already performed on this channel, preventing it from being sent to another process")),
-        };
-
+        let (server_pipe, client_pipe) = raw_pipe_pair(PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_REJECT_REMOTE_CLIENTS)?;
+        let inheritable_process_handle = WinHandle::from_raw(unsafe { GetCurrentProcess() }).unwrap().clone_ex(true, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?;
         let to_be_sent = ChildMessageChannel {
-            channel_handle: inheritable_pipe,
-            remote_process_handle: inheritable_process_handle,
-            server: self.server,
+            channel_handle: client_pipe.modify(true, ClonedHandleAccess::Same)?,
+            remote_process_handle: Some(inheritable_process_handle),
         };
 
         let (child_handle, t) = transmit_and_launch(to_be_sent)?;
+        let channel = MessageChannel {
+            pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(server_pipe.into_raw()) }, tokio_loop)?,
+            server: true,
+            target: HandleTarget::RemoteProcess((child_handle.0).0),
+        };
 
-        if self.server {
-            *target_state = HandleTargetState::ServerSentTo((child_handle.0).0);
-        } else {
-            *target_state = HandleTargetState::ClientSentTo((child_handle.0).0);
-        }
-
-        Ok(t)
+        Ok((channel, t))
     }
 }
 
 impl Channel for MessageChannel {
     fn handle_target(&self) -> HandleTarget<HANDLE> {
-        match *self.target_state.lock().unwrap() {
-            HandleTargetState::Unsent => HandleTarget::CurrentProcess,
-            HandleTargetState::ServerSentTo(ref remote) => {
-                assert!(!self.server);
-                HandleTarget::RemoteProcess(remote.get())
-            },
-            HandleTargetState::ClientSentTo(ref remote) => {
-                assert!(self.server);
-                HandleTarget::RemoteProcess(remote.get())
-            },
+        match self.target {
+            HandleTarget::None => HandleTarget::None,
+            HandleTarget::CurrentProcess => HandleTarget::CurrentProcess,
+            HandleTarget::RemoteProcess(ref p) => HandleTarget::RemoteProcess(p.get()),
         }
     }
 }
@@ -138,9 +92,8 @@ impl Channel for MessageChannel {
 pub(crate) struct ChildMessageChannel {
     #[serde(with = "inheritable_channel_serialize")]
     channel_handle: WinHandle,
-    #[serde(with = "inheritable_channel_serialize")]
-    remote_process_handle: WinHandle,
-    server: bool,
+    #[serde(with = "inheritable_channel_serialize_opt")]
+    remote_process_handle: Option<WinHandle>,
 }
 
 mod inheritable_channel_serialize {
@@ -165,21 +118,43 @@ mod inheritable_channel_serialize {
     }
 }
 
+mod inheritable_channel_serialize_opt {
+    use super::*;
+
+    use serde::{Serialize, Deserialize};
+
+    pub fn serialize<S>(handle: &Option<WinHandle>, serializer: S) -> Result<S::Ok, S::Error> where
+        S: Serializer,
+    {
+        Option::<usize>::serialize(&handle.as_ref().map(|handle|(handle.get() as usize)), serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<WinHandle>, D::Error> where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        if let Some(handle) = Option::<usize>::deserialize(deserializer)? {
+            Ok(Some(WinHandle::from_raw(handle as HANDLE)
+                .ok_or_else(|| D::Error::custom(io::Error::new(io::ErrorKind::InvalidData, "received invalid inherited handle")))?
+            ))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 impl ChildMessageChannel {
     pub fn into_channel(self, tokio: &TokioHandle) -> io::Result<MessageChannel> {
-        let state = Arc::new(Mutex::new({
-            if self.server {
-                HandleTargetState::ClientSentTo(self.remote_process_handle)
-            } else {
-                HandleTargetState::ServerSentTo(self.remote_process_handle)
-            }
-        }));
-
         Ok(
             MessageChannel {
-                pipe: NamedPipe::Unregistered { pipe: self.channel_handle, tokio: tokio.clone() },
-                server: self.server,
-                target_state: state.clone(),
+                pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(self.channel_handle.into_raw()) }, tokio)?,
+                server: false,
+                target: if let Some(handle) = self.remote_process_handle {
+                    HandleTarget::RemoteProcess(handle)
+                } else {
+                    HandleTarget::None
+                },
             }
         )
     }
@@ -215,12 +190,12 @@ impl<'a> Iterator for ChildMessageChannelHandles<'a> {
 
     fn next(&mut self) -> Option<HANDLE> {
         let handle = match self.index {
-            0 => self.channel_handle.channel_handle.get(),
-            1 => self.channel_handle.remote_process_handle.get(),
+            0 => Some(self.channel_handle.channel_handle.get()),
+            1 => self.channel_handle.remote_process_handle.as_ref().map(|x| x.get()),
             _ => return None,
         };
         self.index += 1;
-        Some(handle)
+        handle
     }
 }
 
@@ -240,52 +215,54 @@ impl PreMessageChannel {
         ))
     }
 
-    pub fn into_channel(self, process_token: ProcessToken, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
-        let target_state = if self.server {
-            HandleTargetState::ClientSentTo((process_token.0).0)
-        } else {
-            HandleTargetState::ServerSentTo((process_token.0).0)
-        };
-
+    pub fn into_channel(self, process_token: ProcessHandle, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
         Ok(MessageChannel {
-            pipe: NamedPipe::Unregistered { pipe: self.pipe.0, tokio: tokio_loop.clone() },
+            pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(self.pipe.0.into_raw()) }, tokio_loop)?,
             server: self.server,
-            target_state: Arc::new(Mutex::new(target_state)),
+            target: HandleTarget::RemoteProcess((process_token.0).0),
+        })
+    }
+
+    pub fn into_sealed_channel(self, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
+        Ok(MessageChannel {
+            pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(self.pipe.0.into_raw()) }, tokio_loop)?,
+            server: self.server,
+            target: HandleTarget::None,
         })
     }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub(crate) struct ProcessToken(SendableWinHandle);
+pub(crate) struct ProcessHandle(SendableWinHandle);
 
-impl ProcessToken {
+impl ProcessHandle {
     pub fn current() -> io::Result<Self> {
         let handle = WinHandle::from_raw(unsafe { GetCurrentProcess() }).unwrap()
             .clone_ex(false, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?;
-        Ok(ProcessToken(SendableWinHandle(handle)))
+        Ok(ProcessHandle(SendableWinHandle(handle)))
     }
 
     pub fn clone(&self) -> io::Result<Self> {
-        Ok(ProcessToken(SendableWinHandle(
+        Ok(ProcessHandle(SendableWinHandle(
             (self.0).0.clone()?
         )))
     }
 }
 
-pub trait ProcessTokenExt: Sized {
-    fn from_process_handle<H>(handle: &H) -> io::Result<Self> where H: AsRawHandle;
-    unsafe fn from_process_handle_raw(handle: HANDLE) -> io::Result<Self>;
+pub trait ProcessHandleExt: Sized {
+    fn from_windows_handle<H>(handle: &H) -> io::Result<Self> where H: AsRawHandle;
+    unsafe fn from_windows_handle_raw(handle: HANDLE) -> io::Result<Self>;
 }
 
-impl ProcessTokenExt for ::ProcessToken {
-    fn from_process_handle<H>(handle: &H) -> io::Result<Self> where H: AsRawHandle {
-        Ok(::ProcessToken(ProcessToken(SendableWinHandle(
+impl ProcessHandleExt for ::ProcessHandle {
+    fn from_windows_handle<H>(handle: &H) -> io::Result<Self> where H: AsRawHandle {
+        Ok(::ProcessHandle(ProcessHandle(SendableWinHandle(
             WinHandle::cloned_ex(handle, false, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?
         ))))
     }
 
-    unsafe fn from_process_handle_raw(handle: HANDLE) -> io::Result<Self> {
-        Ok(::ProcessToken(ProcessToken(SendableWinHandle(
+    unsafe fn from_windows_handle_raw(handle: HANDLE) -> io::Result<Self> {
+        Ok(::ProcessHandle(ProcessHandle(SendableWinHandle(
             WinHandle::cloned_raw_ex(handle, false, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?
         ))))
     }
@@ -368,12 +345,10 @@ impl NamedMessageChannel {
                 process_id,
             ))?;
 
-            let target_state = Arc::new(Mutex::new(HandleTargetState::ClientSentTo(remote_process_handle)));
-
             Ok(MessageChannel {
-                pipe: NamedPipe::Unregistered { pipe: self.server_pipe, tokio: self.tokio_loop },
+                pipe: PollEvented::new(MioNamedPipe::from_raw_handle(self.server_pipe.into_raw()), &self.tokio_loop)?,
                 server: true,
-                target_state,
+                target: HandleTarget::RemoteProcess(remote_process_handle),
             })
         }
     }
@@ -418,12 +393,10 @@ impl NamedMessageChannel {
                 process_id,
             ))?;
 
-            let target_state = Arc::new(Mutex::new(HandleTargetState::ServerSentTo(remote_process_handle)));
-
             Ok(MessageChannel {
-                pipe: NamedPipe::Unregistered { pipe: client_pipe, tokio: tokio_loop.clone() },
+                pipe: PollEvented::new(MioNamedPipe::from_raw_handle(client_pipe.into_raw()), tokio_loop)?,
                 server: false,
-                target_state,
+                target: HandleTarget::RemoteProcess(remote_process_handle),
             })
         }
     }
@@ -452,51 +425,6 @@ impl io::Read for MessageChannel {
 }
 
 impl AsyncRead for MessageChannel {
-
-}
-
-impl NamedPipe {
-    fn ensure_registered(&mut self) -> io::Result<&mut PollEvented<MioNamedPipe>> {
-        let pipe = match *self {
-            NamedPipe::Registered { ref mut pipe } => return Ok(pipe),
-            NamedPipe::Unregistered { ref pipe, ref tokio } => {
-                PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(pipe.get()) }, tokio)?
-            },
-        };
-
-        unsafe {
-            ptr::write(self, NamedPipe::Registered { pipe });
-        }
-
-        self.ensure_registered()
-    }
-}
-
-impl io::Write for NamedPipe {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.ensure_registered()?.write(buffer)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.ensure_registered()?.flush()
-    }
-}
-
-impl AsyncWrite for NamedPipe {
-    fn shutdown(&mut self) -> Poll<(), io::Error> {
-        self.ensure_registered()?.get_ref().disconnect()?;
-
-        Ok(Async::Ready(()))
-    }
-}
-
-impl io::Read for NamedPipe {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.ensure_registered()?.read(buffer)
-    }
-}
-
-impl AsyncRead for NamedPipe {
 
 }
 

@@ -24,10 +24,9 @@ fn main() {
         mp_channel_base::run_child(tokio_loop, channel);
     } else {
         let tokio_loop = TokioLoop::new().unwrap();
-        let (a, b) = MessageChannel::pair(&tokio_loop.handle(), 8192).unwrap();
 
         let mut child_command = Command::new(env::current_exe().unwrap());
-        let mut child = b.send_to_child(&mut child_command, |command, child_channel| {
+        let (a, mut child) = MessageChannel::establish_with_child(&mut child_command, 8192, &tokio_loop.handle(), |command, child_channel| {
             command.env(CHILD_CHANNEL_ENV_VAR, serde_json::to_string(child_channel).unwrap()).spawn()
         }).unwrap();
 

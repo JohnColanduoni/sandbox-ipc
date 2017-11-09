@@ -6,10 +6,13 @@ use std::io::Read;
 
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 
+/// Wraps a normal `std::fs::File` so it may be transmitted to other processes.
 #[derive(Debug)]
 pub struct SendableFile<B = fs::File>(pub B) where
     B: ::std::borrow::Borrow<fs::File>;
 
+/// A source of data can be sent to other processes over a `MessageChannel` or similar
+/// mechanism. It may consist of a file handle, shared memory, or inline data.
 #[derive(Serialize, Deserialize, Debug)]
 pub enum SendableDataSource {
     File(#[serde(with = "sendable_data_source_file")] fs::File),
@@ -50,7 +53,7 @@ pub struct SendableDataSourceReader(_SendableDataSourceReader);
 
 enum _SendableDataSourceReader {
     File(fs::File),
-    Memory(SharedMemMap<SharedMem>, io::Cursor<&'static [u8]>),
+    Memory(SharedMemMap, io::Cursor<&'static [u8]>),
     Inline(io::Cursor<Vec<u8>>),
 }
 
@@ -58,10 +61,11 @@ pub struct SendableDataSourceBytes(_SendableDataSourceBytes);
 
 enum _SendableDataSourceBytes {
     Vec(Vec<u8>),
-    Shared(SharedMemMap<SharedMem>),
+    Shared(SharedMemMap),
 }
 
 impl SendableDataSource {
+    /// Converts the `SendableDataSource` into an appropriate `std::io::Read` implementation.
     pub fn to_read(self) -> io::Result<SendableDataSourceReader> {
         Ok(SendableDataSourceReader(match self {
             SendableDataSource::File(file) => {
@@ -80,6 +84,10 @@ impl SendableDataSource {
         }))
     }
 
+    /// Converts the `SendableDataSource` into a in-memory byte array.
+    /// 
+    /// If the data source is a file, this will read the entirety of it to memory at once. Use `to_read`
+    /// if you need only streaming access to the data.
     pub fn to_bytes(self) -> io::Result<SendableDataSourceBytes> {
         Ok(SendableDataSourceBytes(match self {
             SendableDataSource::File(mut file) => {
