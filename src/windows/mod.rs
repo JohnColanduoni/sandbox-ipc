@@ -1,10 +1,11 @@
-use ::io::SendableFile;
+use ::io::{SendableFile, SendableSocket};
 use ::ser::{SerializeWrapper, SerializeWrapperGuard};
 
 extern crate mio_named_pipes;
 extern crate winapi;
 extern crate kernel32;
 extern crate advapi32;
+extern crate ws2_32;
 
 mod channel;
 mod sharedmem;
@@ -14,14 +15,17 @@ pub use self::channel::*;
 pub(crate) use self::sharedmem::*;
 pub(crate) use self::sync::*;
 
-use std::{io, fs, mem, ptr};
+use std::{io, fs, mem, ptr, fmt};
 use std::cell::RefCell;
 use std::borrow::Borrow;
+use std::sync::{Once, ONCE_INIT};
+use std::net::UdpSocket;
 use std::os::windows::prelude::*;
 
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use self::winapi::*;
 use self::kernel32::*;
+use self::ws2_32::*;
 use winhandle::*;
 
 thread_local! {
@@ -100,6 +104,175 @@ impl<'de> Deserialize<'de> for SendableFile {
     }
 }
 
+impl<'a, T> Serialize for SendableSocket<T> where
+    T: AsRawSocket,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where S: Serializer,
+    {
+        use serde::ser::Error;
+
+        CURRENT_SERIALIZE_CHANNEL_REMOTE_PROCESS.with(|sender_guard| {
+            let mut sender_guard = sender_guard.borrow_mut();
+            let sender = sender_guard.as_mut()
+                .ok_or_else(|| S::Error::custom("attempted to serialize handle outside of IPC channel"))?;
+            let proto_info = unsafe {
+                let mut proto_info: WsaProtoInfo = mem::zeroed();
+                if WSADuplicateSocketW(
+                    self.0.as_raw_socket(),
+                    sender.remote_process_id().map_err(|x| S::Error::custom(x))?,
+                    &mut proto_info as *mut WsaProtoInfo as _,
+                ) != 0 {
+                    return Err(S::Error::custom(io::Error::from_raw_os_error(WSAGetLastError())));
+                }
+                proto_info
+            };
+            proto_info.serialize(serializer)
+        })
+    }
+}
+
+static CALLED_WSASTARTUP: Once = ONCE_INIT;
+
+impl<'de, T> Deserialize<'de> for SendableSocket<T> where
+    T: FromRawSocket,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        // Make sure we've called WSAStartup
+        CALLED_WSASTARTUP.call_once(|| {
+            // Any libstd socket operation will call WSAStartup
+            let _ = UdpSocket::bind("127.0.0.1:9999");
+        });
+
+        CURRENT_DESERIALIZE_CHANNEL_REMOTE_PROCESS.with(|receiver_guard| {
+            let mut receiver_guard = receiver_guard.borrow_mut();
+            let _receiver = receiver_guard.as_mut()
+                .ok_or_else(|| D::Error::custom("attempted to deserialize handle outside of IPC channel"))?;
+            let mut proto_info: WsaProtoInfo = WsaProtoInfo::deserialize(deserializer)?;
+            let raw_socket = unsafe { WSASocketW(
+                proto_info.iAddressFamily,
+                proto_info.iSocketType,
+                proto_info.iProtocol,
+                &mut proto_info as *mut WsaProtoInfo as _,
+                0,
+                0, // Flags are ignored when receiving sockets from another process
+            )};
+            if raw_socket == INVALID_SOCKET {
+                return Err(D::Error::custom(io::Error::from_raw_os_error(unsafe { WSAGetLastError() })));
+            }
+            Ok(SendableSocket(unsafe { T::from_raw_socket(raw_socket) }))
+        })
+    }
+}
+
+#[allow(bad_style)]
+#[repr(C)]
+#[derive(Serialize, Deserialize)]
+struct WsaProtoInfo {
+    dwServiceFlags1: DWORD,
+    dwServiceFlags2: DWORD,
+    dwServiceFlags3: DWORD,
+    dwServiceFlags4: DWORD,
+    dwProviderFlags: DWORD,
+    #[serde(with = "serde_guid")]
+    ProviderId: GUID,
+    dwCatalogEntryId: DWORD,
+    ProtocolChain: WsaProtocolChain,
+    iVersion: c_int,
+    iAddressFamily: c_int,
+    iMaxSockAddr: c_int,
+    iMinSockAddr: c_int,
+    iSocketType: c_int,
+    iProtocol: c_int,
+    iProtocolMaxOffset: c_int,
+    iNetworkByteOrder: c_int,
+    iSecurityScheme: c_int,
+    dwMessageSize: DWORD,
+    dwProviderReserved: DWORD,
+    #[serde(with = "serde_wchar256")]
+    szProtocol: [WCHAR; 256],
+}
+
+#[allow(bad_style)]
+#[repr(C)]
+#[derive(Serialize, Deserialize, Debug)]
+struct WsaProtocolChain {
+    ChainLen: c_int,
+    ChainEntries: [DWORD; 7],
+}
+
+mod serde_guid {
+    use super::*;
+
+    pub fn serialize<S>(f: &GUID, serializer: S) -> Result<S::Ok, S::Error> where
+        S: Serializer,
+    {
+        (f.Data1, f.Data2, f.Data3, f.Data4).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<GUID, D::Error> where
+        D: Deserializer<'de>,
+    {
+        let data: (c_ulong, c_ushort, c_ushort, [c_uchar; 8]) = Deserialize::deserialize(deserializer)?;
+        Ok(GUID {
+            Data1: data.0,
+            Data2: data.1,
+            Data3: data.2,
+            Data4: data.3,
+        })
+    }
+}
+
+mod serde_wchar256 {
+    use super::*;
+
+    pub fn serialize<S>(f: &[WCHAR; 256], serializer: S) -> Result<S::Ok, S::Error> where
+        S: Serializer,
+    {
+        use serde::ser::{SerializeTuple};
+
+        let mut serializer = serializer.serialize_tuple(256)?;
+        for wchar in f.iter() {
+            serializer.serialize_element::<WCHAR>(wchar)?;
+        }
+        serializer.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[WCHAR; 256], D::Error> where
+        D: Deserializer<'de>,
+    {
+        use serde::de::{Visitor, SeqAccess, Error};
+
+        struct AVisitor;
+
+        impl<'de> Visitor<'de> for AVisitor {
+            type Value = [WCHAR; 256];
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("WCHAR string of length 256")
+            }
+
+            fn visit_seq<V>(self, mut seq: V) -> Result<[WCHAR; 256], V::Error>
+                where V: SeqAccess<'de>
+            {
+                let mut buffer: [WCHAR; 256] = [0; 256];
+                for (i, c) in buffer.iter_mut().enumerate() {
+                    let read_c: WCHAR = seq.next_element()?
+                              .ok_or_else(|| Error::invalid_length(i, &self))?;
+                    *c = read_c;
+                }
+                Ok(buffer)
+            }
+        }
+
+        deserializer.deserialize_tuple(256, AVisitor)
+    }
+}
+
 pub(crate) struct ChannelSerializeWrapper;
 
 impl<'a, C> SerializeWrapper<'a, C> for ChannelSerializeWrapper where
@@ -110,7 +283,7 @@ impl<'a, C> SerializeWrapper<'a, C> for ChannelSerializeWrapper where
 
     fn before_serialize(channel: &'a mut C) -> ChannelSerializeGuard {
         let mut sender = Some(HandleSender {
-            target: channel.handle_target(),
+            target: unsafe { mem::transmute::<HandleTarget<&ProcessHandle>, HandleTarget<&'static ProcessHandle>>(channel.handle_target()) },
             handles: Vec::new(),
         });
 
@@ -169,11 +342,11 @@ impl<'a> SerializeWrapperGuard<'a> for ChannelDeserializeGuard {
 }
 
 pub(crate) trait Channel {
-    fn handle_target(&self) -> HandleTarget<HANDLE>;
+    fn handle_target(&self) -> HandleTarget<&ProcessHandle>;
 }
 
 struct HandleSender {
-    target: HandleTarget<HANDLE>,
+    target: HandleTarget<&'static ProcessHandle>,
     handles: Vec<HANDLE>,
 }
 
@@ -190,7 +363,7 @@ impl Drop for HandleSender {
             HandleTarget::RemoteProcess(process_handle) => {
                 for &handle in self.handles.iter() {
                     if unsafe { DuplicateHandle(
-                        process_handle, handle,
+                        process_handle.handle.0.get(), handle,
                         ptr::null_mut(), ptr::null_mut(),
                         0, FALSE, DUPLICATE_CLOSE_SOURCE,
                     ) } == FALSE {
@@ -209,7 +382,7 @@ impl HandleSender {
     fn send(&mut self, handle: HANDLE) -> io::Result<HANDLE> {
         let remote_process_handle = match self.target {
             HandleTarget::CurrentProcess => unsafe { GetCurrentProcess() },
-            HandleTarget::RemoteProcess(remote) => remote,
+            HandleTarget::RemoteProcess(remote) => remote.handle.0.get(),
             HandleTarget::None => return Err(io::Error::new(io::ErrorKind::BrokenPipe, "this pipe is not configured to send handles")),
         };
 
@@ -225,5 +398,13 @@ impl HandleSender {
 
             Ok(remote_handle)
         }
+    }
+
+    fn remote_process_id(&self) -> io::Result<DWORD> {
+        Ok(match self.target {
+            HandleTarget::CurrentProcess => unsafe { GetCurrentProcessId() },
+            HandleTarget::RemoteProcess(remote) => remote.id,
+            HandleTarget::None => return Err(io::Error::new(io::ErrorKind::BrokenPipe, "this pipe is not configured to send handles")),
+        })
     }
 }

@@ -11,6 +11,19 @@ use serde::{Serialize, Deserialize, Serializer, Deserializer};
 pub struct SendableFile<B = fs::File>(pub B) where
     B: ::std::borrow::Borrow<fs::File>;
 
+/// Wraps normal sockets types (e.g. `std::net::TcpStream`) so they may be transmitted to
+/// other processes.
+/// 
+/// # Windows
+/// 
+/// Windows file/pipe handles or sockets that have been associated with an IOCP cannot be
+/// sent to other processes. Tokio is backed by an IOCP on Windows, so Tokio sockets may
+/// not be sent. Do note however that Tokio sockets allow you to `accept` standard blocking
+/// sockets, which *will* be elligible for transmission to other processes, where they can
+/// be added to a Tokio event loop.
+#[derive(Debug)]
+pub struct SendableSocket<S>(pub S);
+
 /// A source of data can be sent to other processes over a `MessageChannel` or similar
 /// mechanism. It may consist of a file handle, shared memory, or inline data.
 #[derive(Serialize, Deserialize, Debug)]

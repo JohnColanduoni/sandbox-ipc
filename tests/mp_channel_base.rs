@@ -1,10 +1,11 @@
 use std::{mem, fs, env, thread};
 use std::io::{Read, Write, Seek, SeekFrom};
+use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{Ordering, AtomicBool};
 use std::time::Duration;
 
 use sandbox_ipc::{MessageChannel};
-use sandbox_ipc::io::{SendableFile};
+use sandbox_ipc::io::{SendableFile, SendableSocket};
 use sandbox_ipc::sync::{Mutex as IpcMutex, MutexHandle as IpcMutexHandle, MUTEX_SHM_SIZE};
 use sandbox_ipc::shm::{SharedMem, Access as SharedMemAccess};
 use futures::prelude::*;
@@ -17,6 +18,8 @@ pub enum Message {
 
     ReadAFile(SendableFile),
     FileSaidThis(String),
+
+    HaveASocket(SendableSocket<TcpStream>),
 
     HaveAMutex(SharedMem, IpcMutexHandle),
     WroteToSharedMem,
@@ -66,6 +69,18 @@ pub fn run_parent(mut tokio_loop: TokioLoop, channel: MessageChannel<Message, Me
         panic!("expected ReadAFile, got {:?}", message);
     };
     println!("parent sent file contents");
+
+    // Share a socket
+    let tcp_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = tcp_listener.local_addr().unwrap().port();
+    let client_socket_thread = ::std::thread::spawn(move || {
+        TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap()
+    });
+    let (server_socket, _) = tcp_listener.accept().unwrap();
+    let mut client_socket = client_socket_thread.join().unwrap();
+    let channel = await!(tokio_loop => channel.send(Message::HaveASocket(SendableSocket(server_socket))));
+    println!("parent sent socket");
+    client_socket.write("hello".as_bytes()).unwrap();
 
     // Create a shared mutex
     let memory = SharedMem::new(4096).unwrap();
@@ -125,6 +140,16 @@ pub fn run_child(mut tokio_loop: TokioLoop, channel: MessageChannel<Message, Mes
         assert_eq!(STRING_WRITTEN_TO_FILE2, data);
     } else {
         panic!("expected FileSaidThis, got {:?}", message);
+    }
+
+    // Receive a socket
+    let (message, channel) = await!(tokio_loop => channel.into_future().map_err(|(err, _)| err));
+    if let Some(Message::HaveASocket(SendableSocket(mut server_socket))) = message {
+        let mut buffer = vec![0u8; 256];
+        let bytes_read = server_socket.read(&mut buffer).unwrap();
+        assert_eq!("hello", ::std::str::from_utf8(&buffer[..bytes_read]).unwrap());
+    } else {
+        panic!("expected HaveASocket, got {:?}", message);
     }
 
     // Interact with a mutex from the parent

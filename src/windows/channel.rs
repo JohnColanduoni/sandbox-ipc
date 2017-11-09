@@ -14,6 +14,7 @@ use platform::mio_named_pipes::NamedPipe as MioNamedPipe;
 use platform::winapi::*;
 use platform::kernel32::*;
 use winhandle::*;
+use widestring::WideCString;
 
 #[derive(Debug)]
 pub(crate) struct MessageChannel {
@@ -23,7 +24,7 @@ pub(crate) struct MessageChannel {
 }
 
 #[derive(Debug)]
-pub(crate) enum HandleTarget<H = WinHandle> {
+pub(crate) enum HandleTarget<H = ProcessHandle> {
     #[allow(dead_code)]
     None,
     CurrentProcess,
@@ -65,13 +66,14 @@ impl MessageChannel {
         let to_be_sent = ChildMessageChannel {
             channel_handle: client_pipe.modify(true, ClonedHandleAccess::Same)?,
             remote_process_handle: Some(inheritable_process_handle),
+            remote_process_id: unsafe { GetCurrentProcessId() },
         };
 
         let (child_handle, t) = transmit_and_launch(to_be_sent)?;
         let channel = MessageChannel {
             pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(server_pipe.into_raw()) }, tokio_loop)?,
             server: true,
-            target: HandleTarget::RemoteProcess((child_handle.0).0),
+            target: HandleTarget::RemoteProcess(child_handle),
         };
 
         Ok((channel, t))
@@ -79,11 +81,11 @@ impl MessageChannel {
 }
 
 impl Channel for MessageChannel {
-    fn handle_target(&self) -> HandleTarget<HANDLE> {
+    fn handle_target(&self) -> HandleTarget<&ProcessHandle> {
         match self.target {
             HandleTarget::None => HandleTarget::None,
             HandleTarget::CurrentProcess => HandleTarget::CurrentProcess,
-            HandleTarget::RemoteProcess(ref p) => HandleTarget::RemoteProcess(p.get()),
+            HandleTarget::RemoteProcess(ref p) => HandleTarget::RemoteProcess(p),
         }
     }
 }
@@ -94,6 +96,7 @@ pub(crate) struct ChildMessageChannel {
     channel_handle: WinHandle,
     #[serde(with = "inheritable_channel_serialize_opt")]
     remote_process_handle: Option<WinHandle>,
+    remote_process_id: DWORD,
 }
 
 mod inheritable_channel_serialize {
@@ -151,7 +154,10 @@ impl ChildMessageChannel {
                 pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(self.channel_handle.into_raw()) }, tokio)?,
                 server: false,
                 target: if let Some(handle) = self.remote_process_handle {
-                    HandleTarget::RemoteProcess(handle)
+                    HandleTarget::RemoteProcess(ProcessHandle {
+                        handle: SendableWinHandle(handle),
+                        id: self.remote_process_id,
+                    })
                 } else {
                     HandleTarget::None
                 },
@@ -215,11 +221,11 @@ impl PreMessageChannel {
         ))
     }
 
-    pub fn into_channel(self, process_token: ProcessHandle, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
+    pub fn into_channel(self, process_handle: ProcessHandle, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
         Ok(MessageChannel {
             pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(self.pipe.0.into_raw()) }, tokio_loop)?,
             server: self.server,
-            target: HandleTarget::RemoteProcess((process_token.0).0),
+            target: HandleTarget::RemoteProcess(process_handle),
         })
     }
 
@@ -233,19 +239,27 @@ impl PreMessageChannel {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub(crate) struct ProcessHandle(SendableWinHandle);
+pub(crate) struct ProcessHandle {
+    pub(crate) handle: SendableWinHandle,
+    pub(crate) id: DWORD,
+}
 
 impl ProcessHandle {
     pub fn current() -> io::Result<Self> {
         let handle = WinHandle::from_raw(unsafe { GetCurrentProcess() }).unwrap()
             .clone_ex(false, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?;
-        Ok(ProcessHandle(SendableWinHandle(handle)))
+        let id = unsafe { GetCurrentProcessId() };
+        Ok(ProcessHandle {
+            handle: SendableWinHandle(handle),
+            id,
+        })
     }
 
     pub fn clone(&self) -> io::Result<Self> {
-        Ok(ProcessHandle(SendableWinHandle(
-            (self.0).0.clone()?
-        )))
+        Ok(ProcessHandle {
+            handle: SendableWinHandle(self.handle.0.clone()?),
+            id: self.id,
+        })
     }
 }
 
@@ -255,16 +269,27 @@ pub trait ProcessHandleExt: Sized {
 }
 
 impl ProcessHandleExt for ::ProcessHandle {
+    /// Creates a `ProcessHandle` from a raw Windows process handle.
+    /// 
+    /// The handle must have the PROCESS_DUP_HANDLE and PROCESS_QUERY_INFORMATION access rights. The handle
+    /// need not stay open.
     fn from_windows_handle<H>(handle: &H) -> io::Result<Self> where H: AsRawHandle {
-        Ok(::ProcessHandle(ProcessHandle(SendableWinHandle(
-            WinHandle::cloned_ex(handle, false, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?
-        ))))
+        unsafe { Self::from_windows_handle_raw(handle.as_raw_handle()) }
     }
 
+    /// Creates a `ProcessHandle` from a raw Windows process handle.
+    /// 
+    /// The handle must have the PROCESS_DUP_HANDLE and PROCESS_QUERY_INFORMATION access rights. The handle
+    /// need not stay open.
     unsafe fn from_windows_handle_raw(handle: HANDLE) -> io::Result<Self> {
-        Ok(::ProcessHandle(ProcessHandle(SendableWinHandle(
-            WinHandle::cloned_raw_ex(handle, false, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?
-        ))))
+        let id = unsafe { GetProcessId(handle) };
+        if id == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(::ProcessHandle(ProcessHandle {
+            handle: SendableWinHandle(WinHandle::clone_from_raw_ex(handle, false, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?),
+            id,
+        }))
     }
 }
 
@@ -281,7 +306,7 @@ impl NamedMessageChannel {
 
         unsafe {
             let server_pipe = winapi_handle_call! { CreateNamedPipeW(
-                WString::from(&pipe_name).unwrap().as_ptr(),
+                WideCString::from_str(&pipe_name).unwrap().as_ptr(),
                 PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
                 PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_REJECT_REMOTE_CLIENTS,
                 1,
@@ -345,6 +370,11 @@ impl NamedMessageChannel {
                 process_id,
             ))?;
 
+            let remote_process_handle = ProcessHandle {
+                handle: SendableWinHandle(remote_process_handle),
+                id: process_id as DWORD, 
+            };
+
             Ok(MessageChannel {
                 pipe: PollEvented::new(MioNamedPipe::from_raw_handle(self.server_pipe.into_raw()), &self.tokio_loop)?,
                 server: true,
@@ -357,7 +387,7 @@ impl NamedMessageChannel {
         N: AsRef<OsStr>,
     {
         unsafe {
-            let name = WString::from(name.as_ref())
+            let name = WideCString::from_str(name.as_ref())
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid name for named pipe"))?;
 
             let timeout = if let Some(duration) = timeout {
@@ -392,6 +422,11 @@ impl NamedMessageChannel {
                 FALSE,
                 process_id,
             ))?;
+
+            let remote_process_handle = ProcessHandle {
+                handle: SendableWinHandle(remote_process_handle),
+                id: process_id,
+            };
 
             Ok(MessageChannel {
                 pipe: PollEvented::new(MioNamedPipe::from_raw_handle(client_pipe.into_raw()), tokio_loop)?,
@@ -434,7 +469,7 @@ fn raw_pipe_pair(pipe_type: DWORD) -> io::Result<(WinHandle, WinHandle)> {
 
         debug!("creating named pipe pair {:?}", pipe_name);
         let server_pipe = winapi_handle_call! { CreateNamedPipeW(
-            WString::from(&pipe_name).unwrap().as_ptr(),
+            WideCString::from_str(&pipe_name).unwrap().as_ptr(),
             PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
             pipe_type,
             1,
@@ -464,7 +499,7 @@ fn raw_pipe_pair(pipe_type: DWORD) -> io::Result<(WinHandle, WinHandle)> {
         };
 
         let client_pipe = winapi_handle_call! { CreateFileW(
-            WString::from(&pipe_name).unwrap().as_ptr(),
+            WideCString::from_str(&pipe_name).unwrap().as_ptr(),
             GENERIC_READ | GENERIC_WRITE,
             0,
             &mut security_attributes,
