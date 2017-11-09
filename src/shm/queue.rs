@@ -1,8 +1,7 @@
 use ::{align, CACHE_LINE, USIZE_SIZE};
 use ::shm::{SharedMemMap};
 
-use std::{io, mem, thread, slice, usize, isize};
-use std::ops::{Deref, DerefMut};
+use std::{io, mem, thread, slice, cmp, usize, isize};
 use std::borrow::Borrow;
 use std::sync::{LockResult, PoisonError};
 use std::sync::atomic::{Ordering, AtomicUsize, AtomicBool};
@@ -177,6 +176,7 @@ impl Queue {
                 self.items_base.offset(((send_index % self.item_count) * self.item_offset) as isize),
                 self.item_size,
             ) },
+            write_offset: 0,
         })
     }
 
@@ -224,6 +224,7 @@ impl Queue {
                 self.items_base.offset(((recv_index % self.item_count) * self.item_offset) as isize),
                 self.item_size,
             ) },
+            read_offset: 0,
         });
 
         if !control.poison.load(Ordering::SeqCst) {
@@ -246,7 +247,8 @@ impl Queue {
 pub struct PushGuard<'a> {
     queue: &'a Queue,
     send_index: usize,
-    slice: &'a mut [u8],
+    slice: *mut [u8],
+    write_offset: usize,
 }
 
 impl<'a> Drop for PushGuard<'a> {
@@ -271,7 +273,8 @@ impl<'a> Drop for PushGuard<'a> {
 pub struct PopGuard<'a> {
     queue: &'a Queue,
     recv_index: usize,
-    slice: &'a [u8],
+    slice: *const [u8],
+    read_offset: usize,
 }
 
 impl<'a> Drop for PopGuard<'a> {
@@ -293,28 +296,67 @@ impl<'a> Drop for PopGuard<'a> {
     }
 }
 
-impl<'a> Deref for PushGuard<'a> {
-    type Target = [u8];
-    
+impl<'a> PushGuard<'a> {
+    /// Gets the shared memory queue slot referred to by this guard.
+    /// 
+    /// This function is unsafe because an uncooperative remote process may
+    /// edit the memory at any time. If possible you should use the `io::Write`
+    /// implementation.
     #[inline]
-    fn deref(&self) -> &[u8] {
-        self.slice
+    pub unsafe fn as_bytes(&self) -> &mut [u8] {
+        &mut *self.slice
     }
 }
 
-impl<'a> DerefMut for PushGuard<'a> {
+impl<'a> io::Write for  PushGuard<'a> {
     #[inline]
-    fn deref_mut(&mut self) -> &mut [u8] {
-        self.slice
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        // TODO: faster index math?
+        unsafe {
+            let bytes_to_write = cmp::min((*self.slice).len() - self.write_offset, bytes.len());
+
+            (*self.slice)[self.write_offset..self.write_offset + bytes_to_write]
+                .copy_from_slice(&bytes[..bytes_to_write]);
+
+            self.write_offset += bytes_to_write;
+
+            Ok(bytes_to_write)
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
-impl<'a> Deref for PopGuard<'a> {
-    type Target = [u8];
-    
+
+impl<'a> PopGuard<'a> {
+    /// Gets the shared memory queue slot referred to by this guard.
+    /// 
+    /// This function is unsafe because an uncooperative remote process may
+    /// edit the memory at any time. If possible you should use the `io::Read`
+    /// implementation.
     #[inline]
-    fn deref(&self) -> &[u8] {
-        self.slice
+    pub unsafe fn as_bytes(&self) -> &[u8] {
+        &*self.slice
+    }
+}
+
+// TODO: initializer once api is stable
+impl<'a> io::Read for PopGuard<'a> {
+    #[inline]
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        // TODO: faster index math?
+        unsafe {
+            let bytes_to_read = cmp::min((*self.slice).len() - self.read_offset, buffer.len());
+
+            buffer[..bytes_to_read]
+                .copy_from_slice(&(*self.slice)[self.read_offset..self.read_offset + bytes_to_read]);
+
+            self.read_offset += bytes_to_read;
+
+            Ok(bytes_to_read)
+        }
     }
 }
 
@@ -373,7 +415,7 @@ mod tests {
                         barrier.wait();
                         loop {
                             if let Some(mut guard) = queue.try_push() {
-                                guard[0] = (i / 2) as u8;
+                                unsafe { guard.as_bytes()[0] = (i / 2) as u8; }
                                 break;
                             }
                         }
@@ -387,7 +429,7 @@ mod tests {
                         barrier.wait();
                         loop {
                             if let Some(guard) = queue.try_pop().unwrap() {
-                                assert!(guard[0] < queue_size as u8);
+                                unsafe { assert!(guard.as_bytes()[0] < queue_size as u8) };
                                 break;
                             }
                         }

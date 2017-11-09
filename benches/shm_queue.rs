@@ -13,6 +13,7 @@ use sandbox_ipc::{MessageChannel, ChildMessageChannel};
 use sandbox_ipc::shm::{self, SharedMem};
 use tokio_core::reactor::{Core as TokioLoop};
 use futures::{Stream, Sink, Future};
+use bincode::Infinite;
 
 const CHILD_CHANNEL_ENV_VAR: &str = "CHILD_CHANNEL";
 
@@ -25,10 +26,9 @@ fn main() {
         run_child(tokio_loop, channel);
     } else {
         let tokio_loop = TokioLoop::new().unwrap();
-        let (a, b) = MessageChannel::pair(&tokio_loop.handle(), 8192).unwrap();
 
         let mut child_command = Command::new(env::current_exe().unwrap());
-        let mut child = b.send_to_child(&mut child_command, |command, child_channel| {
+        let (a, mut child) = MessageChannel::establish_with_child(&mut child_command, 8192, &tokio_loop.handle(), |command, child_channel| {
             command.env(CHILD_CHANNEL_ENV_VAR, serde_json::to_string(child_channel).unwrap()).spawn()
         }).unwrap();
 
@@ -52,7 +52,7 @@ const ITEMS_TO_PROCESS: usize = 10_000_000;
 
 fn run_parent(mut tokio_loop: TokioLoop, channel: MessageChannel<Message, Message>) {
     let memory = SharedMem::new(shm::Queue::required_size(ITEM_SIZE, QUEUE_LEN)).unwrap();
-    let memory_clone = memory.clone(shm::Access::ReadWrite).unwrap();
+    let memory_clone = memory.clone_with_access(shm::Access::ReadWrite).unwrap();
     let queue = unsafe { shm::Queue::new_with_memory(ITEM_SIZE, QUEUE_LEN, memory.map(.., shm::Access::ReadWrite).unwrap(), 0).unwrap() };
     let _channel = tokio_loop.run(channel.send(Message::SharedMemory(memory_clone, queue.handle().unwrap()))).unwrap();
 
@@ -64,7 +64,7 @@ fn run_parent(mut tokio_loop: TokioLoop, channel: MessageChannel<Message, Messag
     let mut m2 = 0f64;
 
     for _ in 0..ITEMS_TO_PROCESS {
-        let pop;
+        let mut pop;
         loop {
             if let Some(guard) = queue.try_pop().unwrap() {
                 pop = guard;
@@ -72,7 +72,7 @@ fn run_parent(mut tokio_loop: TokioLoop, channel: MessageChannel<Message, Messag
             }
         }
 
-        let sent_time: time::SystemTime = bincode::deserialize(&pop).unwrap();
+        let sent_time: time::SystemTime = bincode::deserialize_from(&mut pop, Infinite).unwrap();
         let elapsed = sent_time.elapsed().unwrap();
         let elapsed_ns = elapsed.subsec_nanos();
 
@@ -111,7 +111,6 @@ fn run_child(mut tokio_loop: TokioLoop, channel: MessageChannel<Message, Message
         }
 
         let now = time::SystemTime::now();
-        let mut buffer: &mut [u8] = &mut push;
-        bincode::serialize_into(&mut buffer, &now, bincode::Infinite).unwrap();
+        bincode::serialize_into(&mut push, &now, Infinite).unwrap();
     }
 }
