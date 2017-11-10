@@ -467,6 +467,17 @@ fn raw_pipe_pair(pipe_type: DWORD) -> io::Result<(WinHandle, WinHandle)> {
     unsafe {
         let pipe_name = OsString::from(format!(r#"\\.\pipe\{}"#, Uuid::new_v4()));
 
+        // Give pipe a null security descriptor
+        let mut security_descriptor: [u8; 256] = mem::zeroed(); // TODO: don't fudge this structure
+        winapi_bool_call!(log: InitializeSecurityDescriptor(security_descriptor.as_mut_ptr() as _, 1))?;
+        winapi_bool_call!(log: SetSecurityDescriptorDacl(security_descriptor.as_mut_ptr() as _, TRUE, ptr::null_mut(), FALSE))?;
+
+        let mut security_attributes = SECURITY_ATTRIBUTES {
+            nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as DWORD,
+            lpSecurityDescriptor: security_descriptor.as_mut_ptr() as _,
+            bInheritHandle: FALSE,
+        };
+
         debug!("creating named pipe pair {:?}", pipe_name);
         let server_pipe = winapi_handle_call! { CreateNamedPipeW(
             WideCString::from_str(&pipe_name).unwrap().as_ptr(),
@@ -475,12 +486,13 @@ fn raw_pipe_pair(pipe_type: DWORD) -> io::Result<(WinHandle, WinHandle)> {
             1,
             0, 0,
             0,
-            ptr::null_mut()
+            &mut security_attributes,
         )}?;
 
         // Begin connection operation on server half
         let mut overlapped: OVERLAPPED = mem::zeroed();
 
+        // This should not succeed (we are doing overlapped IO)
         if ConnectNamedPipe(
             server_pipe.get(),
             &mut overlapped
@@ -492,13 +504,8 @@ fn raw_pipe_pair(pipe_type: DWORD) -> io::Result<(WinHandle, WinHandle)> {
             return Err(io::Error::last_os_error());
         }
 
-        let mut security_attributes = SECURITY_ATTRIBUTES {
-            nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as DWORD,
-            lpSecurityDescriptor: ptr::null_mut(),
-            bInheritHandle: FALSE,
-        };
 
-        let client_pipe = winapi_handle_call! { CreateFileW(
+        let client_pipe = winapi_handle_call!(log: CreateFileW(
             WideCString::from_str(&pipe_name).unwrap().as_ptr(),
             GENERIC_READ | GENERIC_WRITE,
             0,
@@ -506,10 +513,10 @@ fn raw_pipe_pair(pipe_type: DWORD) -> io::Result<(WinHandle, WinHandle)> {
             OPEN_EXISTING,
             SECURITY_IDENTIFICATION | FILE_FLAG_OVERLAPPED,
             ptr::null_mut()
-        )}?;
+        ))?;
 
         let mut bytes: DWORD = 0;
-        winapi_bool_call!(GetOverlappedResultEx(
+        winapi_bool_call!(log: GetOverlappedResultEx(
             server_pipe.get(),
             &mut overlapped,
             &mut bytes,
@@ -523,3 +530,8 @@ fn raw_pipe_pair(pipe_type: DWORD) -> io::Result<(WinHandle, WinHandle)> {
 
 const SECURITY_IDENTIFICATION: DWORD = 65536;
 const NMPWAIT_WAIT_FOREVER: DWORD = 0xFFFFFFFF;
+
+extern "system" {
+    fn InitializeSecurityDescriptor(desc: PSECURITY_DESCRIPTOR, revision: DWORD) -> BOOL;
+    fn SetSecurityDescriptorDacl(desc: PSECURITY_DESCRIPTOR, bDaclPresent: BOOL, pDacl: PACL, bDaclDefaulted: BOOL) -> BOOL;
+}
