@@ -92,7 +92,7 @@ impl io::Write for MessageChannel {
         if let Async::Ready(()) = self.socket.poll_write() {
             unsafe { 
                 self.cmsg.set_data(buffer);
-                let result = libc::sendmsg(self.socket.get_ref().0, self.cmsg.ptr(), 0);
+                let result = libc::sendmsg(self.socket.get_ref().0, self.cmsg.ptr(), libc::MSG_DONTWAIT);
                 if result >= 0 {
                     Ok(result as usize)
                 } else {
@@ -129,7 +129,7 @@ impl io::Read for MessageChannel {
             unsafe { 
                 self.cmsg.set_data(buffer);
                 self.cmsg.reset_fd_count();
-                let result = libc::recvmsg(self.socket.get_ref().0, self.cmsg.ptr(), 0);
+                let result = libc::recvmsg(self.socket.get_ref().0, self.cmsg.ptr(), libc::MSG_DONTWAIT);
                 if result >= 0 {
                     Ok(result as usize)
                 } else {
