@@ -304,6 +304,9 @@ pub(crate) struct Cmsg {
     fd_count: usize,
 }
 
+unsafe impl Send for Cmsg {}
+unsafe impl Sync for Cmsg {}
+
 impl Cmsg {
     fn new(fd_count: usize) -> Self {
         unsafe {
