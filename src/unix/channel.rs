@@ -183,6 +183,10 @@ impl ProcessHandle {
         Ok(ProcessHandle {})
     }
 
+    pub fn from_child(child: &process::Child) -> io::Result<Self> {
+        Ok(ProcessHandle {})
+    }
+
     pub fn clone(&self) -> io::Result<Self> {
         Ok(ProcessHandle {})
     }
