@@ -1,6 +1,6 @@
 [package]
 name = "sandbox-ipc"
-version = "0.2.0"
+version = "0.3.0"
 
 description = "An IPC implementation with an eye toward enabling privilege separation."
 repository = "https://github.com/JohnColanduoni/sandbox-ipc"
