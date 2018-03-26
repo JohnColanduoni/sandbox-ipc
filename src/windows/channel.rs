@@ -274,7 +274,7 @@ impl ProcessHandle {
 
     pub fn from_child(child: &process::Child) -> io::Result<Self> {
         Ok(ProcessHandle {
-            handle: SendableWinHandle(WinHandle::clone_from(child)?),
+            handle: SendableWinHandle(WinHandle::clone_from_ex(child, false, ClonedHandleAccess::Explicit(PROCESS_DUP_HANDLE))?),
             id: child.id(),
         })
     }
