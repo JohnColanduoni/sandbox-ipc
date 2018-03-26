@@ -6,8 +6,9 @@ use std::{io, mem, ptr, thread, usize};
 use std::borrow::Borrow;
 use std::sync::atomic::{Ordering, AtomicUsize};
 
-use platform::winapi::*;
-use platform::kernel32::*;
+use winapi::shared::minwindef::{TRUE};
+use winapi::um::winbase::{INFINITE, WAIT_OBJECT_0};
+use winapi::um::synchapi::{WaitForSingleObject, CreateSemaphoreW, ReleaseSemaphore};
 use winhandle::*;
 
 pub(crate) struct Mutex {

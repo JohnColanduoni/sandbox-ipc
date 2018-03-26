@@ -11,8 +11,18 @@ use tokio::{AsyncRead, AsyncWrite};
 use tokio::reactor::{PollEvented, Handle as TokioHandle};
 use futures::{Poll};
 use platform::mio_named_pipes::NamedPipe as MioNamedPipe;
-use platform::winapi::*;
-use platform::kernel32::*;
+use winapi::shared::minwindef::{DWORD, ULONG, BOOL, TRUE, FALSE};
+use winapi::shared::ntdef::{HANDLE};
+use winapi::shared::winerror::{ERROR_IO_PENDING};
+use winapi::um::minwinbase::{OVERLAPPED, SECURITY_ATTRIBUTES};
+use winapi::um::winbase::{PIPE_TYPE_MESSAGE, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_ACCESS_DUPLEX, FILE_FLAG_OVERLAPPED, INFINITE};
+use winapi::um::winbase::{GetNamedPipeClientProcessId, GetNamedPipeServerProcessId};
+use winapi::um::winnt::{PROCESS_DUP_HANDLE, GENERIC_READ, GENERIC_WRITE, PSECURITY_DESCRIPTOR, PACL};
+use winapi::um::errhandlingapi::{GetLastError};
+use winapi::um::processthreadsapi::{GetCurrentProcess, GetCurrentProcessId, GetProcessId, OpenProcess};
+use winapi::um::namedpipeapi::{ConnectNamedPipe, WaitNamedPipeW, CreateNamedPipeW};
+use winapi::um::fileapi::{OPEN_EXISTING, CreateFileW};
+use winapi::um::ioapiset::{GetOverlappedResultEx};
 use winhandle::*;
 use widestring::WideCString;
 
@@ -282,7 +292,7 @@ impl ProcessHandleExt for ::ProcessHandle {
     /// The handle must have the PROCESS_DUP_HANDLE and PROCESS_QUERY_INFORMATION access rights. The handle
     /// need not stay open.
     unsafe fn from_windows_handle_raw(handle: HANDLE) -> io::Result<Self> {
-        let id = unsafe { GetProcessId(handle) };
+        let id = GetProcessId(handle);
         if id == 0 {
             return Err(io::Error::last_os_error());
         }

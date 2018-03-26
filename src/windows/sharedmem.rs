@@ -5,8 +5,13 @@ use std::{io, mem, ptr};
 use std::collections::Bound;
 
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
-use platform::winapi::*;
-use platform::kernel32::*;
+use winapi::shared::minwindef::{DWORD, FALSE};
+use winapi::shared::basetsd::{SIZE_T};
+use winapi::um::winnt::{PAGE_READWRITE};
+use winapi::um::handleapi::{DuplicateHandle};
+use winapi::um::processthreadsapi::{GetCurrentProcess};
+use winapi::um::memoryapi::{FILE_MAP_READ, FILE_MAP_WRITE, FILE_MAP_ALL_ACCESS, MapViewOfFile, UnmapViewOfFile, CreateFileMappingW};
+use winapi::um::sysinfoapi::{SYSTEM_INFO, GetSystemInfo};
 use winhandle::*;
 
 #[derive(Debug)]

@@ -31,7 +31,7 @@ pub struct Handle {
     shm_token: Uuid,
 }
 
-#[repr(packed)]
+#[repr(C)]
 struct SharedMemQueueCtrl {
     next_send_index: AtomicUsize,
     _padding1: [u8; CACHE_LINE - USIZE_SIZE],
@@ -414,7 +414,7 @@ mod tests {
                     move || {
                         barrier.wait();
                         loop {
-                            if let Some(mut guard) = queue.try_push() {
+                            if let Some(guard) = queue.try_push() {
                                 unsafe { guard.as_bytes()[0] = (i / 2) as u8; }
                                 break;
                             }

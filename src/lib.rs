@@ -80,6 +80,8 @@ mod tokio {
 extern crate futures;
 
 #[cfg(target_os = "windows")]
+extern crate winapi;
+#[cfg(target_os = "windows")]
 #[macro_use] extern crate winhandle;
 #[cfg(target_os = "windows")]
 extern crate widestring;

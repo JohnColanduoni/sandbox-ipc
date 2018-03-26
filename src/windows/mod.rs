@@ -2,10 +2,6 @@ use ::io::{SendableFile, SendableSocket};
 use ::ser::{SerializeWrapper, SerializeWrapperGuard};
 
 extern crate mio_named_pipes;
-extern crate winapi;
-extern crate kernel32;
-extern crate advapi32;
-extern crate ws2_32;
 
 mod channel;
 mod sharedmem;
@@ -20,12 +16,18 @@ use std::cell::RefCell;
 use std::borrow::Borrow;
 use std::sync::{Once, ONCE_INIT};
 use std::net::UdpSocket;
+use std::os::raw::{c_int, c_ulong, c_ushort, c_uchar};
 use std::os::windows::prelude::*;
 
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
-use self::winapi::*;
-use self::kernel32::*;
-use self::ws2_32::*;
+use winapi::shared::ntdef::{HANDLE, WCHAR};
+use winapi::shared::guiddef::{GUID};
+use winapi::shared::minwindef::{DWORD, FALSE};
+use winapi::um::winnt::{DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS};
+use winapi::um::handleapi::{CloseHandle, DuplicateHandle};
+use winapi::um::processthreadsapi::{GetCurrentProcess, GetCurrentProcessId};
+use winapi::um::winsock2::{WSADuplicateSocketW, WSAGetLastError, WSASocketW};
+use winapi::um::winsock2::{INVALID_SOCKET};
 use winhandle::*;
 
 thread_local! {
@@ -119,7 +121,7 @@ impl<'a, T> Serialize for SendableSocket<T> where
             let proto_info = unsafe {
                 let mut proto_info: WsaProtoInfo = mem::zeroed();
                 if WSADuplicateSocketW(
-                    self.0.as_raw_socket(),
+                    self.0.as_raw_socket() as usize,
                     sender.remote_process_id().map_err(|x| S::Error::custom(x))?,
                     &mut proto_info as *mut WsaProtoInfo as _,
                 ) != 0 {
@@ -164,7 +166,7 @@ impl<'de, T> Deserialize<'de> for SendableSocket<T> where
             if raw_socket == INVALID_SOCKET {
                 return Err(D::Error::custom(io::Error::from_raw_os_error(unsafe { WSAGetLastError() })));
             }
-            Ok(SendableSocket(unsafe { T::from_raw_socket(raw_socket) }))
+            Ok(SendableSocket(unsafe { T::from_raw_socket(raw_socket as u64) }))
         })
     }
 }
