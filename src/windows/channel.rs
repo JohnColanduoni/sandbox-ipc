@@ -271,6 +271,13 @@ impl ProcessHandle {
             id: self.id,
         })
     }
+
+    pub fn from_child(child: &process::Child) -> io::Result<Self> {
+        Ok(ProcessHandle {
+            handle: SendableWinHandle(WinHandle::clone_from(child)?),
+            id: child.id(),
+        })
+    }
 }
 
 pub trait ProcessHandleExt: Sized {
