@@ -7,7 +7,7 @@ use std::ffi::{OsString, OsStr};
 
 use uuid::Uuid;
 use serde::{Serializer, Deserializer};
-use tokio::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::reactor::{PollEvented, Handle as TokioHandle};
 use futures::{Poll};
 use platform::mio_named_pipes::NamedPipe as MioNamedPipe;

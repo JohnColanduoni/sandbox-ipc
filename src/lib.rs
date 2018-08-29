@@ -128,7 +128,7 @@ fn check_send(_t: &Send) {
 }
 
 // TODO: specialize for platform
-#[cfg(test)] // Temporary, while Queue isn't well tested
+#[cfg(any(test, target_os = "windows"))] // Temporary, while Queue isn't well tested
 const CACHE_LINE: usize = 64;
 
 #[cfg(target_pointer_width = "32")]

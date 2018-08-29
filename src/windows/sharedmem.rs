@@ -50,7 +50,7 @@ impl SharedMem {
                 ptr::null_mut(),
                 ptr::null_mut(),
                 PAGE_READWRITE,
-                (size >> 32) as DWORD,
+                high_bits(size),
                 (size & 0xFFFFFFFF) as DWORD,
                 ptr::null()
             )}?;
@@ -112,7 +112,7 @@ impl SharedMem {
             let addr = MapViewOfFile(
                 self.handle.get(),
                 raw_access,
-                (mapping_offset >> 32) as DWORD,
+                high_bits(mapping_offset),
                 (mapping_offset & 0xFFFFFFFF) as DWORD,
                 mapping_len as SIZE_T
             );
@@ -162,4 +162,14 @@ lazy_static! {
         GetSystemInfo(&mut system_info);
         system_info.dwPageSize as usize
     };
+}
+
+// Rust complains about exceeding bitshifts
+#[cfg(target_pointer_width = "32")]
+fn high_bits(_x: usize) -> DWORD {
+    0
+}
+#[cfg(not(target_pointer_width = "32"))]
+fn high_bits(x: usize) -> DWORD {
+    (x >> 32) as DWORD
 }

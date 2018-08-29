@@ -166,7 +166,7 @@ impl<'de, T> Deserialize<'de> for SendableSocket<T> where
             if raw_socket == INVALID_SOCKET {
                 return Err(D::Error::custom(io::Error::from_raw_os_error(unsafe { WSAGetLastError() })));
             }
-            Ok(SendableSocket(unsafe { T::from_raw_socket(raw_socket as u64) }))
+            Ok(SendableSocket(unsafe { T::from_raw_socket(raw_socket as RawSocket) }))
         })
     }
 }
