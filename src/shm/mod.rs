@@ -7,8 +7,10 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
+// TODO: make these public when ready for primetime
+#[cfg(test)]
 pub mod queue;
-
+#[cfg(test)]
 pub use self::queue::Queue;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -98,7 +100,7 @@ mod tests {
     use super::*;
     use ::{MessageChannel, check_send};
 
-    use tokio;
+    use tokio::runtime::Runtime;
     use futures::{Sink, Stream};
 
     #[test]
@@ -116,8 +118,8 @@ mod tests {
 
     #[test]
     fn send_mem_same_process() {
-        let mut reactor = tokio::reactor::Core::new().unwrap();
-        let (a, b) = MessageChannel::pair(&reactor.handle(), 8192).unwrap();
+        let mut runtime = Runtime::new().unwrap();
+        let (a, b) = MessageChannel::pair(runtime.reactor(), 8192).unwrap();
 
         let test_bytes: &[u8] = b"hello";
 
@@ -129,8 +131,8 @@ mod tests {
             slice[0..test_bytes.len()].copy_from_slice(test_bytes);
         }
 
-        let _a = reactor.run(a.send(memory)).unwrap();
-        let (message, _b) = reactor.run(b.into_future()).map_err(|(err, _)| err).unwrap();
+        let _a = runtime.block_on(a.send(memory)).unwrap();
+        let (message, _b) = runtime.block_on(b.into_future()).map_err(|(err, _)| err).unwrap();
         let memory: SharedMem = message.unwrap();
 
         unsafe {

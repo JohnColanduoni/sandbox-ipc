@@ -6,8 +6,9 @@ use std::time::Duration;
 use std::ffi::{OsString, OsStr};
 
 use uuid::Uuid;
-use tokio::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::reactor::{PollEvented, Handle as TokioHandle};
+use self::mio::Ready;
 use futures::{Poll, Async};
 use platform::libc;
 
@@ -30,8 +31,8 @@ impl MessageChannel {
         let (a, b) = raw_socketpair()?;
 
         Ok((
-            MessageChannel { socket: PollEvented::new(a, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
-            MessageChannel { socket: PollEvented::new(b, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
+            MessageChannel { socket: PollEvented::new_with_handle(a, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
+            MessageChannel { socket: PollEvented::new_with_handle(b, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
         ))
     }
 
@@ -46,7 +47,7 @@ impl MessageChannel {
         let child = transmit_and_launch(command, channel)?;
 
         Ok((
-            MessageChannel { socket: PollEvented::new(a, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS), },
+            MessageChannel { socket: PollEvented::new_with_handle(a, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS), },
             child,
         ))
     }
@@ -62,7 +63,7 @@ impl MessageChannel {
         let (_token, t) = transmit_and_launch(channel)?;
 
         Ok((
-            MessageChannel { socket: PollEvented::new(a, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS), },
+            MessageChannel { socket: PollEvented::new_with_handle(a, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS), },
             t,
         ))
     }
@@ -76,7 +77,7 @@ pub struct ChildMessageChannel {
 impl ChildMessageChannel {
     pub fn into_channel(self, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
         Ok(
-            MessageChannel { socket: PollEvented::new(ScopedFd(self.fd), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
+            MessageChannel { socket: PollEvented::new_with_handle(ScopedFd(self.fd), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
         )
     }
 }
@@ -89,7 +90,7 @@ impl Channel for MessageChannel {
 
 impl io::Write for MessageChannel {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        if let Async::Ready(()) = self.socket.poll_write() {
+        if let Async::Ready(_) = self.socket.poll_write_ready()? {
             unsafe { 
                 self.cmsg.set_data(buffer);
                 let result = libc::sendmsg(self.socket.get_ref().0, self.cmsg.ptr(), libc::MSG_DONTWAIT);
@@ -98,7 +99,7 @@ impl io::Write for MessageChannel {
                 } else {
                     let err = io::Error::last_os_error();
                     if err.kind() == io::ErrorKind::WouldBlock {
-                        self.socket.need_write();
+                        self.socket.clear_write_ready()?;
                     }
                     Err(err)
                 }
@@ -125,7 +126,7 @@ impl AsyncWrite for MessageChannel {
 
 impl io::Read for MessageChannel {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if let Async::Ready(()) = self.socket.poll_read() {
+        if let Async::Ready(_) = self.socket.poll_read_ready(Ready::readable())? {
             unsafe { 
                 self.cmsg.set_data(buffer);
                 self.cmsg.reset_fd_count();
@@ -135,7 +136,7 @@ impl io::Read for MessageChannel {
                 } else {
                     let err = io::Error::last_os_error();
                     if err.kind() == io::ErrorKind::WouldBlock {
-                        self.socket.need_read();
+                        self.socket.clear_read_ready(Ready::readable())?;
                     }
                     Err(err)
                 }
@@ -165,12 +166,12 @@ impl PreMessageChannel {
     }
 
     pub fn into_channel(self, _remote_process: ProcessHandle, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
-        Ok(MessageChannel { socket: PollEvented::new(self.fd, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) })
+        Ok(MessageChannel { socket: PollEvented::new_with_handle(self.fd, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) })
     }
 
     pub fn into_sealed_channel(self, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
         // TODO: seal the channel
-        Ok(MessageChannel { socket: PollEvented::new(self.fd, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) })
+        Ok(MessageChannel { socket: PollEvented::new_with_handle(self.fd, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) })
     }
 }
 
@@ -183,7 +184,7 @@ impl ProcessHandle {
         Ok(ProcessHandle {})
     }
 
-    pub fn from_child(child: &process::Child) -> io::Result<Self> {
+    pub fn from_child(_child: &process::Child) -> io::Result<Self> {
         Ok(ProcessHandle {})
     }
 
@@ -247,7 +248,7 @@ impl NamedMessageChannel {
             }
 
             Ok(MessageChannel {
-                socket: PollEvented::new(ScopedFd(socket), &self.tokio_loop)?,
+                socket: PollEvented::new_with_handle(ScopedFd(socket), &self.tokio_loop)?,
                 cmsg: Cmsg::new(MAX_MSG_FDS),
             })
         }
@@ -275,7 +276,7 @@ impl NamedMessageChannel {
             }
 
             Ok(MessageChannel {
-                socket: PollEvented::new(ScopedFd(socket), tokio_loop)?,
+                socket: PollEvented::new_with_handle(ScopedFd(socket), tokio_loop)?,
                 cmsg: Cmsg::new(MAX_MSG_FDS),
             })
         }

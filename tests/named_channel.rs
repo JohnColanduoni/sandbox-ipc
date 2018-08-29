@@ -1,5 +1,5 @@
 extern crate sandbox_ipc;
-extern crate tokio_core;
+extern crate tokio;
 extern crate futures;
 
 #[macro_use] extern crate serde_derive;
@@ -9,7 +9,7 @@ use std::process::Command;
 use std::ffi::OsStr;
 
 use sandbox_ipc::{NamedMessageChannel};
-use tokio_core::reactor::{Core as TokioLoop};
+use tokio::runtime::{Runtime as TokioLoop};
 
 const CHILD_CHANNEL_ARG: &str = "--child-channel=";
 
@@ -19,12 +19,12 @@ fn main() {
     if let Some(arg) = env::args().find(|x| x.starts_with(CHILD_CHANNEL_ARG)) {
         let tokio_loop = TokioLoop::new().unwrap();
         let channel_name = OsStr::new(&arg[CHILD_CHANNEL_ARG.len()..]);
-        let channel = NamedMessageChannel::connect(&channel_name, None, &tokio_loop.handle(), 8192).unwrap();
+        let channel = NamedMessageChannel::connect(&channel_name, None, tokio_loop.reactor(), 8192).unwrap();
 
         mp_channel_base::run_child(tokio_loop, channel);
     } else {
         let tokio_loop = TokioLoop::new().unwrap();
-        let channel_server = NamedMessageChannel::new(&tokio_loop.handle(), 8192).unwrap();
+        let channel_server = NamedMessageChannel::new(tokio_loop.reactor(), 8192).unwrap();
 
         let mut child = Command::new(env::current_exe().unwrap())
             .arg(format!("{}{}", CHILD_CHANNEL_ARG, channel_server.name().to_str().unwrap()))

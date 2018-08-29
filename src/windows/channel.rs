@@ -47,12 +47,12 @@ impl MessageChannel {
 
         Ok((
             MessageChannel {
-                pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(server_pipe.into_raw()) }, tokio_loop)?,
+                pipe: PollEvented::new_with_handle(unsafe { MioNamedPipe::from_raw_handle(server_pipe.into_raw()) }, tokio_loop)?,
                 server: true,
                 target: HandleTarget::CurrentProcess,
             },
             MessageChannel {
-                pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(client_pipe.into_raw()) }, tokio_loop)?,
+                pipe: PollEvented::new_with_handle(unsafe { MioNamedPipe::from_raw_handle(client_pipe.into_raw()) }, tokio_loop)?,
                 server: false,
                 target: HandleTarget::CurrentProcess,
             },
@@ -81,7 +81,7 @@ impl MessageChannel {
 
         let (child_handle, t) = transmit_and_launch(to_be_sent)?;
         let channel = MessageChannel {
-            pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(server_pipe.into_raw()) }, tokio_loop)?,
+            pipe: PollEvented::new_with_handle(unsafe { MioNamedPipe::from_raw_handle(server_pipe.into_raw()) }, tokio_loop)?,
             server: true,
             target: HandleTarget::RemoteProcess(child_handle),
         };
@@ -161,7 +161,7 @@ impl ChildMessageChannel {
     pub fn into_channel(self, tokio: &TokioHandle) -> io::Result<MessageChannel> {
         Ok(
             MessageChannel {
-                pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(self.channel_handle.into_raw()) }, tokio)?,
+                pipe: PollEvented::new_with_handle(unsafe { MioNamedPipe::from_raw_handle(self.channel_handle.into_raw()) }, tokio)?,
                 server: false,
                 target: if let Some(handle) = self.remote_process_handle {
                     HandleTarget::RemoteProcess(ProcessHandle {
@@ -233,7 +233,7 @@ impl PreMessageChannel {
 
     pub fn into_channel(self, process_handle: ProcessHandle, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
         Ok(MessageChannel {
-            pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(self.pipe.0.into_raw()) }, tokio_loop)?,
+            pipe: PollEvented::new_with_handle(unsafe { MioNamedPipe::from_raw_handle(self.pipe.0.into_raw()) }, tokio_loop)?,
             server: self.server,
             target: HandleTarget::RemoteProcess(process_handle),
         })
@@ -241,7 +241,7 @@ impl PreMessageChannel {
 
     pub fn into_sealed_channel(self, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
         Ok(MessageChannel {
-            pipe: PollEvented::new(unsafe { MioNamedPipe::from_raw_handle(self.pipe.0.into_raw()) }, tokio_loop)?,
+            pipe: PollEvented::new_with_handle(unsafe { MioNamedPipe::from_raw_handle(self.pipe.0.into_raw()) }, tokio_loop)?,
             server: self.server,
             target: HandleTarget::None,
         })
@@ -393,7 +393,7 @@ impl NamedMessageChannel {
             };
 
             Ok(MessageChannel {
-                pipe: PollEvented::new(MioNamedPipe::from_raw_handle(self.server_pipe.into_raw()), &self.tokio_loop)?,
+                pipe: PollEvented::new_with_handle(MioNamedPipe::from_raw_handle(self.server_pipe.into_raw()), &self.tokio_loop)?,
                 server: true,
                 target: HandleTarget::RemoteProcess(remote_process_handle),
             })
@@ -446,7 +446,7 @@ impl NamedMessageChannel {
             };
 
             Ok(MessageChannel {
-                pipe: PollEvented::new(MioNamedPipe::from_raw_handle(client_pipe.into_raw()), tokio_loop)?,
+                pipe: PollEvented::new_with_handle(MioNamedPipe::from_raw_handle(client_pipe.into_raw()), tokio_loop)?,
                 server: false,
                 target: HandleTarget::RemoteProcess(remote_process_handle),
             })

@@ -4,7 +4,7 @@ use std::io;
 use serde::{Serialize, Deserialize};
 use bincode;
 use futures::{Stream, Sink, Poll, Async, AsyncSink, StartSend};
-use tokio::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 pub struct BincodeDatagram<S, T, R, W = NoopWrapper> where
     S: AsyncRead + AsyncWrite,

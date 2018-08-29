@@ -9,7 +9,7 @@ use sandbox_ipc::io::{SendableFile, SendableSocket};
 use sandbox_ipc::sync::{Mutex as IpcMutex, MutexHandle as IpcMutexHandle, MUTEX_SHM_SIZE};
 use sandbox_ipc::shm::{SharedMem, Access as SharedMemAccess};
 use futures::prelude::*;
-use tokio_core::reactor::{Core as TokioLoop};
+use tokio::runtime::{Runtime as TokioLoop};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Message {
@@ -30,7 +30,7 @@ const STRING_WRITTEN_TO_FILE2: &str = "this is in another file";
 
 macro_rules! await {
     ($tloop:expr => $fut:expr) => {
-        $tloop.run($fut).unwrap()
+        $tloop.block_on($fut).unwrap()
     };
 }
 

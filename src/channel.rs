@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 use serde::{Serialize, Deserialize};
 use futures::{Stream, Sink, Poll, StartSend};
 use tokio::reactor::{Handle as TokioHandle};
-use tokio::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 /// A basic channel for sending serializable types between processes.
 /// 
