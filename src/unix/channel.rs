@@ -69,6 +69,21 @@ impl MessageChannel {
     }
 }
 
+impl<T, R> AsRawFd for ::MessageChannel<T, R> where
+    T: Serialize,
+    R: for<'a> Deserialize<'a>,
+{
+    fn as_raw_fd(&self) -> RawFd {
+        self.inner.io.socket.get_ref().as_raw_fd()
+    }
+}
+
+impl AsRawFd for ::RawMessageChannel {
+    fn as_raw_fd(&self) -> RawFd {
+        self.inner.socket.get_ref().as_raw_fd()
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChildMessageChannel {
     fd: libc::c_int,
@@ -79,6 +94,18 @@ impl ChildMessageChannel {
         Ok(
             MessageChannel { socket: PollEvented::new_with_handle(ScopedFd(self.fd), tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) },
         )
+    }
+}
+
+impl AsRawFd for ::ChildMessageChannel {
+    fn as_raw_fd(&self) -> RawFd {
+        self.inner.fd
+    }
+}
+
+impl AsRawFd for ::ChildRawMessageChannel {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.fd
     }
 }
 
@@ -172,6 +199,21 @@ impl PreMessageChannel {
     pub fn into_sealed_channel(self, tokio_loop: &TokioHandle) -> io::Result<MessageChannel> {
         // TODO: seal the channel
         Ok(MessageChannel { socket: PollEvented::new_with_handle(self.fd, tokio_loop)?, cmsg: Cmsg::new(MAX_MSG_FDS) })
+    }
+}
+
+impl<T, R> AsRawFd for ::PreMessageChannel<T, R> where
+    T: Serialize,
+    R: for<'a> Deserialize<'a>,
+{
+    fn as_raw_fd(&self) -> RawFd {
+        self.inner.fd.as_raw_fd()
+    }
+}
+
+impl AsRawFd for ::PreRawMessageChannel {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.fd.as_raw_fd()
     }
 }
 

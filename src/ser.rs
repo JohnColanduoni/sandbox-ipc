@@ -12,7 +12,7 @@ pub struct BincodeDatagram<S, T, R, W = NoopWrapper> where
     R: for<'de> Deserialize<'de>,
     W: for<'a> SerializeWrapper<'a, S>,
 {
-    io: S,
+    pub(crate) io: S,
     config: bincode::Config,
     rx_buffer: Vec<u8>,
     tx_buffer: Vec<u8>,

@@ -26,7 +26,7 @@ pub struct MessageChannel<T, R> where
     T: Serialize,
     R: for<'de> Deserialize<'de>
 {
-    inner: BincodeDatagram<platform::MessageChannel, T, R, platform::ChannelSerializeWrapper>,
+    pub(crate) inner: BincodeDatagram<platform::MessageChannel, T, R, platform::ChannelSerializeWrapper>,
     #[allow(unused)]
     max_message_size: usize,
 }
@@ -172,7 +172,7 @@ pub struct PreMessageChannel<T, R> where
     T: Serialize,
     R: for<'des> Deserialize<'des>
 {
-    inner: platform::PreMessageChannel,
+    pub(crate) inner: platform::PreMessageChannel,
     max_message_size: usize,
     _phantom: PhantomData<(T, R)>,
 }
@@ -218,7 +218,7 @@ impl<T, R> PreMessageChannel<T, R> where
 /// 
 /// This can be upgraded into a `MessageChannel` at any time.
 pub struct RawMessageChannel {
-    inner: platform::MessageChannel,
+    pub(crate) inner: platform::MessageChannel,
 }
 
 impl RawMessageChannel {
@@ -299,7 +299,7 @@ impl ChildRawMessageChannel {
 /// crate capable of transmitting OS resources. When they reach their destination they can be converted
 /// into `RawMessageChannel`s.
 #[derive(Serialize, Deserialize, Debug)]
-pub struct PreRawMessageChannel(platform::PreMessageChannel);
+pub struct PreRawMessageChannel(pub(crate) platform::PreMessageChannel);
 
 impl PreRawMessageChannel {
     pub fn pair() -> io::Result<(Self, Self)> {
