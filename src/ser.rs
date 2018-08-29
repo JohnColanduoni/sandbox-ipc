@@ -13,6 +13,7 @@ pub struct BincodeDatagram<S, T, R, W = NoopWrapper> where
     W: for<'a> SerializeWrapper<'a, S>,
 {
     io: S,
+    config: bincode::Config,
     rx_buffer: Vec<u8>,
     tx_buffer: Vec<u8>,
     buffered_send: Option<usize>,
@@ -38,8 +39,13 @@ impl<S, T, R, W> BincodeDatagram<S, T, R, W> where
     W: for<'a> SerializeWrapper<'a, S>,
 {
     pub fn wrap(io: S, buffer_size: usize) -> Self {
+        let mut config = bincode::config();
+        config
+            .limit(buffer_size as u64)
+            .native_endian();
         BincodeDatagram {
             io,
+            config,
             rx_buffer: vec![0u8; buffer_size],
             tx_buffer: vec![0u8; buffer_size],
             buffered_send: None,
@@ -67,7 +73,7 @@ impl<S, T, R, W> Stream for BincodeDatagram<S, T, R, W> where
         let message;
         {
             let guard = W::before_deserialize(&mut self.io);
-            message = bincode::deserialize(&self.rx_buffer[0..message_size])
+            message = self.config.deserialize(&self.rx_buffer[0..message_size])
                 .map_err(|x| io::Error::new(io::ErrorKind::InvalidData, x))?;
             guard.commit();
         };
@@ -97,7 +103,7 @@ impl<S, T, R, W> Sink for BincodeDatagram<S, T, R, W> where
 
         {
             let guard = W::before_serialize(&mut self.io);
-            bincode::serialize_into(&mut cursor, &item, bincode::Infinite)
+            self.config.serialize_into(&mut cursor, &item)
                 .map_err(|x| io::Error::new(io::ErrorKind::InvalidInput, x))?;
             guard.commit();
         }
