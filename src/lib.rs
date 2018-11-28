@@ -60,34 +60,11 @@
 //! 
 
 #[macro_use] extern crate log;
-extern crate uuid;
-extern crate rand;
 #[macro_use] extern crate lazy_static;
-
-extern crate serde;
 #[macro_use] extern crate serde_derive;
-extern crate bincode;
 
-extern crate tokio_reactor;
-#[macro_use] extern crate tokio_io;
-
-mod tokio {
-    pub(crate) use ::tokio_reactor as reactor;
-    pub(crate) use ::tokio_io as io;
-    #[cfg(test)]
-    pub(crate) use ::tokio_all::runtime;
-}
-extern crate futures;
-
-#[cfg(target_os = "windows")]
-extern crate winapi;
 #[cfg(target_os = "windows")]
 #[macro_use] extern crate winhandle;
-#[cfg(target_os = "windows")]
-extern crate widestring;
-
-#[cfg(test)]
-extern crate tokio as tokio_all;
 
 mod channel;
 pub mod io;

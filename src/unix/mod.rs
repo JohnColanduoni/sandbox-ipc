@@ -1,9 +1,6 @@
 use ::io::{SendableFile, SendableSocket};
 use ser::{SerializeWrapper, SerializeWrapperGuard};
 
-extern crate libc;
-extern crate mio;
-
 mod channel;
 mod sharedmem;
 mod sync;
