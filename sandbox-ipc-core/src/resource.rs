@@ -23,7 +23,7 @@ pub struct ResourceRef<'a> {
 /// ## non-macOS Unix
 /// 
 /// No out of line transmission of resources is necessary, so a transmitter can be created via the platform specific
-/// `ResourceTransmitterExt::scm_rights()` function, which will transmit file descriptors directly over the channel.
+/// `ResourceTransceiverExt::scm_rights()` function, which will transmit file descriptors directly over the channel.
 /// 
 /// ## Windows
 /// 
@@ -35,20 +35,20 @@ pub struct ResourceRef<'a> {
 /// 
 /// If this behavior is acceptable (e.g. if you are not using the [`Channel`](crate::channel::Channel) across a security
 /// boundary, or if the sender is strictly more privileged than the receiver), the 
-/// `ResourceTransmitterExt::from_process_handle_insecure()` function may be used to create a resource transmitter.
+/// `ResourceTransceiverExt::from_process_handle_insecure()` function may be used to create a resource transmitter.
 /// 
 /// If not, some trusted entity must be used to perform escrow of transmitted `HANDLE`s by holding process handles 
 /// for each side of the connection (e.g. a supervisory process that manages another process's sandbox). In this case the
-/// `ResourceTransmitterExt::from_escrow_agent()` function may be used.
+/// `ResourceTransceiverExt::from_escrow_agent()` function may be used.
 /// 
 /// # macOS
 /// 
 /// The macOS [`Channel`](crate::channel::Channel) is implemented via Mach ports, which can transmit rights to other Mach ports
 /// inline in a familiar manner to the `SCM_RIGHTS` facility used with other Unix platforms. File descriptors are also supported 
 /// using the `fileport_makeport`/`fileport_makefd` functions. The transmitter can be created by the
-/// `ResourceTransmitterExt::mach()` function. 
-pub struct ResourceTransmitter {
-    pub(crate) inner: platform::ResourceTransmitter,
+/// `ResourceTransceiverExt::mach()` function. 
+pub struct ResourceTransceiver {
+    pub(crate) inner: platform::ResourceTransceiver,
 }
 
 passthrough_debug!(Resource => inner);
@@ -59,4 +59,4 @@ impl<'a> fmt::Debug for ResourceRef<'a> {
     }
 }
 
-passthrough_debug!(ResourceTransmitter => inner);
+passthrough_debug!(ResourceTransceiver => inner);

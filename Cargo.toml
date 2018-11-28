@@ -56,3 +56,4 @@ members = ["sandbox-ipc-core"]
 compio-core = { path = "../compio/compio-core" }
 compio-ipc = { path = "../compio/compio-ipc" }
 compio = { path = "../compio" }
+mach-port = { path = "../machapi/mach-port" }

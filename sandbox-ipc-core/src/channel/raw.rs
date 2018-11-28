@@ -1,5 +1,5 @@
 use crate::platform;
-use crate::resource::{Resource, ResourceRef, ResourceTransmitter};
+use crate::resource::{Resource, ResourceRef, ResourceTransceiver};
 
 use std::{io};
 
@@ -29,24 +29,20 @@ impl PreChannel {
         })
     }
 
-    pub fn into_resource_channel(self, queue: &Registrar, resource_transmitter: ResourceTransmitter) -> io::Result<Channel> {
+    pub fn into_resource_channel(self, queue: &Registrar, resource_tranceiver: ResourceTransceiver) -> io::Result<Channel> {
         Ok(Channel {
-            inner: self.inner.into_resource_channel(queue, resource_transmitter.inner)?,
+            inner: self.inner.into_resource_channel(queue, resource_tranceiver.inner)?,
         })
     }
 }
 
 impl Channel {
     pub fn send<'a>(&'a mut self, buffer: &'a [u8]) -> impl Future<Output=io::Result<()>> + Send + 'a {
-        async {
-            unimplemented!()
-        }
+        self.inner.send(buffer)
     }
 
     pub fn recv<'a>(&'a mut self, buffer: &'a mut [u8]) -> impl Future<Output=io::Result<usize>> + Send + 'a {
-        async {
-            unimplemented!()
-        }
+        self.inner.recv(buffer)
     }
 
     /// Sends a message with [`Resource`]s attached.
@@ -55,10 +51,10 @@ impl Channel {
     /// significant support from the application layer. The returned [`ChannelResourceSender`] allows the caller to
     /// provide resources to be moved/copied to the destination, while producing data to be embeded into the message
     /// to facilitate reconstruction.
-    pub fn send_with_resources<'a>(&'a mut self) -> ChannelResourceSender<'a> {
-        ChannelResourceSender {
-            inner: self.inner.send_with_resources(),
-        }
+    pub fn send_with_resources<'a>(&'a mut self) -> io::Result<ChannelResourceSender<'a>> {
+        Ok(ChannelResourceSender {
+            inner: self.inner.send_with_resources()?,
+        })
     }
 
     /// Receives a message with [`Resource`]s attached.
@@ -161,8 +157,8 @@ mod tests {
 
         let mut executor = LocalExecutor::new().unwrap();
         let (a, b) = PreChannel::pair().unwrap();
-        let mut a = a.into_resource_channel(&executor.registrar(), ResourceTransmitter::inline()).unwrap();
-        let mut b = b.into_channel(&executor.registrar()).unwrap();
+        let mut a = a.into_resource_channel(&executor.registrar(), ResourceTransceiver::inline_tx_only()).unwrap();
+        let mut b = b.into_resource_channel(&executor.registrar(), ResourceTransceiver::inline_rx_only()).unwrap();
 
         let message = b"Hello world!";
 
@@ -182,7 +178,7 @@ mod tests {
                 let mut f = tempfile::tempfile().unwrap();
                 f.write_all(message).unwrap();
                 let mut buffer = Vec::new();
-                let mut sender = a.send_with_resources();
+                let mut sender = a.send_with_resources().unwrap();
                 sender.move_resource(Resource::from_fd(f), &mut buffer).unwrap();
                 await!(sender.finish(&buffer)).unwrap();
             };

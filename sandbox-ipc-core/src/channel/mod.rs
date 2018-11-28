@@ -1,17 +1,12 @@
 pub mod raw;
 
 use crate::platform;
-use crate::resource::ResourceTransmitter;
+use crate::resource::ResourceTransceiver;
 
 use std::{io};
 use std::marker::PhantomData;
 
 use compio_core::queue::Registrar;
-
-use serde::{
-    ser::Serialize, 
-    de::DeserializeOwned,
-};
 
 pub struct Channel<T, R> {
     inner: platform::Channel,
@@ -50,9 +45,9 @@ impl<T, R> PreChannel<T, R> {
         })
     }
 
-    pub fn into_resource_channel(self, queue: &Registrar, resource_transmitter: ResourceTransmitter) -> io::Result<Channel<T, R>> {
+    pub fn into_resource_channel(self, queue: &Registrar, resource_tranceiver: ResourceTransceiver) -> io::Result<Channel<T, R>> {
         Ok(Channel {
-            inner: self.inner.into_resource_channel(queue, resource_transmitter.inner)?,
+            inner: self.inner.into_resource_channel(queue, resource_tranceiver.inner)?,
             _phantom: PhantomData,
         })
     }

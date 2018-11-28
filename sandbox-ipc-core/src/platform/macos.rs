@@ -15,13 +15,13 @@ use futures_core::{
 use futures_util::try_ready;
 use compio_core::queue::Registrar;
 use compio_core::os::macos::{RegistrarExt, PortRegistration, RawPort};
-use compio_ipc::os::macos::{Port, PortMsgBuffer, PortMoveMode, PortCopyMode, PortMsgDescriptorKindMut};
+use mach_port::{Port, MsgBuffer, PortMoveMode, PortCopyMode, MsgDescriptorKindMut};
 
 pub struct Channel {
     tx: Port,
     rx: Port,
     rx_registration: PortRegistration,
-    resource_transmitter: Option<ResourceTransmitter>,
+    resource_tranceiver: Option<ResourceTransceiver>,
 }
 
 pub struct PreChannel {
@@ -51,8 +51,8 @@ pub enum ResourceRef<'a> {
 }
 
 #[derive(Debug)]
-pub enum ResourceTransmitter {
-    Mach,
+pub enum ResourceTransceiver {
+    Mach { tx: bool, rx: bool },
 }
 
 // Used only for serialization purposes
@@ -63,11 +63,30 @@ enum ResourceKind {
 }
 
 impl Channel {
-    pub fn send_with_resources(&mut self) -> ChannelResourceSender {
-        // TODO: reuse PortMsgBuffers
+    pub fn send<'a>(&'a mut self, buffer: &'a [u8]) -> impl Future<Output=io::Result<()>> + Send + 'a {
+        // TODO: reuse MsgBuffers
         ChannelResourceSender {
             channel: self,
-            msg: PortMsgBuffer::new(),
+            msg: MsgBuffer::new(),
+        }.finish(buffer)
+    }
+
+    pub async fn recv<'a>(&'a mut self, buffer: &'a mut [u8]) -> io::Result<usize> {
+        // TODO: reuse MsgBuffers
+        let mut msg = MsgBuffer::new();
+        await!(self.recv_into_msg_and_buffer(&mut msg, 0, buffer))
+    }
+
+    pub fn send_with_resources(&mut self) -> io::Result<ChannelResourceSender> {
+        match self.resource_tranceiver {
+            Some(ResourceTransceiver::Mach { tx: true, .. }) => {
+                // TODO: reuse MsgBuffers
+                Ok(ChannelResourceSender {
+                    channel: self,
+                    msg: MsgBuffer::new(),
+                })
+            },
+            _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "this Channel does not support resource transmission")),
         }
     }
 
@@ -75,27 +94,14 @@ impl Channel {
         'a: 'b,
     {
         async move {
-            // TODO: reuse PortMsgBuffers
-            let mut msg = PortMsgBuffer::new();
-            msg.reserve_inline_data(mem::size_of::<usize>() + buffer.len());
-            msg.reserve_descriptors(max_resources);
-            await!(self.recv_into_msg(&mut msg))?;
-
-            if msg.inline_data().len() < mem::size_of::<usize>() {
-                return Err(io::Error::new(io::ErrorKind::Other, "inline data in mach message too short"));
+            match self.resource_tranceiver {
+                Some(ResourceTransceiver::Mach { rx: true, .. }) => {},
+                _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, "this Channel does not support resource receiving")),
             }
-            let (len_bytes, data) = msg.inline_data().split_at(mem::size_of::<usize>());
-            let length = unsafe { *(len_bytes.as_ptr() as *const usize) };
-            let source = data.get(..length)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "inline data in mach message does not match declared length"))?;
-            // TODO: The read will fail but the message will not be consumed if the reserved buffer is too small, but amortized allocation
-            // of Vec may result in the PortMsgBuffer being bigger than the user provided buffer. Because of the space reserved for resource
-            // descriptors we can't ensure this doesn't happen in general even if we add another size limit that we pass to the underlying
-            // receive call. Perhaps we should keep the message around, allowing the user to try and read it again (normalizing the behavior
-            // between the two capacity failures)?
-            let dest = buffer.get_mut(..length)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "buffer too small for incomming message"))?;
-            dest.copy_from_slice(source);
+
+            // TODO: reuse MsgBuffers
+            let mut msg = MsgBuffer::new();
+            let length = await!(self.recv_into_msg_and_buffer(&mut msg, max_resources, buffer))?;
 
             Ok(ChannelResourceReceiver {
                 channel: self,
@@ -105,17 +111,42 @@ impl Channel {
         }
     }
 
-    fn recv_into_msg<'a>(&'a mut self, msg: &'a mut PortMsgBuffer) -> ChannelRecvFuture<'a> {
+    fn recv_into_msg<'a>(&'a mut self, msg: &'a mut MsgBuffer) -> ChannelRecvFuture<'a> {
         ChannelRecvFuture {
             channel: self,
             msg,
         }
     }
+
+    async fn recv_into_msg_and_buffer<'a>(&'a mut self, msg: &'a mut MsgBuffer, max_resources: usize, buffer: &'a mut [u8]) -> io::Result<usize> {
+        msg.reserve_inline_data(mem::size_of::<usize>() + buffer.len());
+        msg.reserve_descriptors(max_resources);
+        await!(self.recv_into_msg(msg))?;
+
+        if msg.inline_data().len() < mem::size_of::<usize>() {
+            return Err(io::Error::new(io::ErrorKind::Other, "inline data in mach message too short"));
+        }
+        let (len_bytes, data) = msg.inline_data().split_at(mem::size_of::<usize>());
+        let length = unsafe { *(len_bytes.as_ptr() as *const usize) };
+        let source = data.get(..length)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "inline data in mach message does not match declared length"))?;
+        // TODO: The read will fail but the message will not be consumed if the reserved buffer is too small, but amortized allocation
+        // of Vec may result in the MsgBuffer being bigger than the user provided buffer. Because of the space reserved for resource
+        // descriptors we can't ensure this doesn't happen in general even if we add another size limit that we pass to the underlying
+        // receive call. Perhaps we should keep the message around, allowing the user to try and read it again (normalizing the behavior
+        // between the two capacity failures)?
+        // TODO: With the above, should also check max_resources more strictly to help avoid conditional bugs
+        let dest = buffer.get_mut(..length)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "buffer too small for incomming message"))?;
+        dest.copy_from_slice(source);
+
+        Ok(length)
+    }
 }
 
 pub struct ChannelResourceSender<'a> {
     channel: &'a mut Channel,
-    msg: PortMsgBuffer,
+    msg: MsgBuffer,
 }
 
 impl<'a> ChannelResourceSender<'a> {
@@ -140,7 +171,25 @@ impl<'a> ChannelResourceSender<'a> {
     }
 
     pub fn copy_resource<W: io::Write>(&mut self, resource: ResourceRef<'a>, buffer: &mut W) -> io::Result<usize> {
-        unimplemented!()
+        let (port, mode, kind) = match resource {
+            ResourceRef::Port(mode, port) => (port.as_raw_port(), mode, ResourceKind::Port),
+            ResourceRef::Fd(fd) => unsafe {
+                // TODO: can be made more efficient by using move_resource, since this doesn't close the original
+                // fd
+                let mut port: RawPort = 0;
+                if fileport_makeport(fd, &mut port) < 0 {
+                    let err = io::Error::last_os_error();
+                    error!("failed to create Mach port from file descriptor: {}", err);
+                    return Err(err);
+                }
+                (port, PortCopyMode::Send, ResourceKind::Fd)
+            },
+        };
+        let descriptor_index = self.msg.descriptors().len();
+        unsafe { self.msg.copy_right_raw(mode, port); }
+        buffer.write_u32::<NativeEndian>(descriptor_index as u32)?;
+        buffer.write_u32::<NativeEndian>(kind as u32)?;
+        Ok(mem::size_of::<u32>() * 2)
     }
 
     pub fn finish<'b>(mut self, buffer: &'b [u8]) -> impl Future<Output=io::Result<()>> + 'a + 'b where
@@ -166,7 +215,7 @@ impl<'a> ChannelResourceSender<'a> {
 
 pub struct ChannelResourceReceiver<'a> {
     channel: &'a mut Channel,
-    msg: PortMsgBuffer,
+    msg: MsgBuffer,
     data_len: usize,
 }
 
@@ -188,7 +237,7 @@ impl<'a> ChannelResourceReceiver<'a> {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "out of range descriptor index in data"))?;
 
         match descriptor.kind_mut() {
-            PortMsgDescriptorKindMut::Port(descriptor) => {
+            MsgDescriptorKindMut::Port(descriptor) => {
                 match kind {
                     ResourceKind::Port => {
                         let port = descriptor.take_port()?
@@ -217,7 +266,7 @@ impl<'a> ChannelResourceReceiver<'a> {
 
 pub struct ChannelSendFuture<'a> {
     channel: &'a mut Channel,
-    msg: PortMsgBuffer,
+    msg: MsgBuffer,
 }
 
 impl<'a> Unpin for ChannelSendFuture<'a> {}
@@ -225,17 +274,17 @@ impl<'a> Unpin for ChannelSendFuture<'a> {}
 impl<'a> Future for ChannelSendFuture<'a> {
     type Output = io::Result<()>;
 
-    fn poll(mut self: Pin<&mut Self>, waker: &LocalWaker) -> Poll<io::Result<()>> {
+    fn poll(mut self: Pin<&mut Self>, _waker: &LocalWaker) -> Poll<io::Result<()>> {
         // FIXME: implement async send with MACH_SEND_TIMEOUT and MACH_SEND_NOTIFY
         let this = &mut *self;
-        this.channel.tx.send(&mut this.msg)?;
+        this.channel.tx.send(&mut this.msg, None)?;
         Poll::Ready(Ok(()))
     }
 }
 
 pub struct ChannelRecvFuture<'a> {
     channel: &'a mut Channel,
-    msg: &'a mut PortMsgBuffer,
+    msg: &'a mut MsgBuffer,
 }
 
 impl<'a> Unpin for ChannelRecvFuture<'a> {}
@@ -283,17 +332,17 @@ impl PreChannel {
             tx: self.tx,
             rx: self.rx,
             rx_registration,
-            resource_transmitter: None,
+            resource_tranceiver: None,
         })
     }
 
-    pub fn into_resource_channel(self, queue: &Registrar, resource_transmitter: ResourceTransmitter) -> io::Result<Channel> {
+    pub fn into_resource_channel(self, queue: &Registrar, resource_tranceiver: ResourceTransceiver) -> io::Result<Channel> {
         let rx_registration = queue.register_mach_port(self.rx.as_raw_port())?;
         Ok(Channel {
             tx: self.tx,
             rx: self.rx,
             rx_registration,
-            resource_transmitter: Some(resource_transmitter),
+            resource_tranceiver: Some(resource_tranceiver),
         })
     }
 }
@@ -388,21 +437,39 @@ impl<'a> self::unix::ResourceRefExt<'a> for crate::resource::ResourceRef<'a> {
     }
 }
 
-pub trait ResourceTransmitterExt {
+pub trait ResourceTransceiverExt {
     fn mach() -> Self;
+    fn mach_tx_only() -> Self;
+    fn mach_rx_only() -> Self;
 }
 
-impl ResourceTransmitterExt for crate::resource::ResourceTransmitter {
+impl ResourceTransceiverExt for crate::resource::ResourceTransceiver {
     fn mach() -> Self {
-        crate::resource::ResourceTransmitter {
-            inner: ResourceTransmitter::Mach,
+        crate::resource::ResourceTransceiver {
+            inner: ResourceTransceiver::Mach { tx: true, rx: true },
+        }
+    }
+    fn mach_tx_only() -> Self {
+        crate::resource::ResourceTransceiver {
+            inner: ResourceTransceiver::Mach { tx: true, rx: false },
+        }
+    }
+    fn mach_rx_only() -> Self {
+        crate::resource::ResourceTransceiver {
+            inner: ResourceTransceiver::Mach { tx: false, rx: true },
         }
     }
 }
 
-impl self::unix::ResourceTransmitterExt for crate::resource::ResourceTransmitter {
+impl self::unix::ResourceTransceiverExt for crate::resource::ResourceTransceiver {
     fn inline() -> Self {
         Self::mach()
+    }
+    fn inline_tx_only() -> Self {
+        Self::mach_tx_only()
+    }
+    fn inline_rx_only() -> Self {
+        Self::mach_rx_only()
     }
 }
 

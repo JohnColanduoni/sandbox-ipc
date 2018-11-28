@@ -12,6 +12,8 @@ pub trait ResourceRefExt<'a> {
     fn as_raw_fd(&self) -> Option<RawFd>;
 }
 
-pub trait ResourceTransmitterExt {
+pub trait ResourceTransceiverExt {
     fn inline() -> Self;
+    fn inline_tx_only() -> Self;
+    fn inline_rx_only() -> Self;
 }

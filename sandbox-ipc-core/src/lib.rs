@@ -12,11 +12,11 @@ mod platform;
 pub mod os {
     #[cfg(unix)]
     pub mod unix {
-        pub use crate::platform::unix::{ResourceExt, ResourceRefExt, ResourceTransmitterExt};
+        pub use crate::platform::unix::{ResourceExt, ResourceRefExt, ResourceTransceiverExt};
     }
 
     #[cfg(target_os = "macos")]
     pub mod macos {
-        pub use crate::platform::{ResourceExt, ResourceRefExt, ResourceTransmitterExt};
+        pub use crate::platform::{ResourceExt, ResourceRefExt, ResourceTransceiverExt};
     }
 }
