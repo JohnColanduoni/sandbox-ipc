@@ -91,7 +91,7 @@ impl Channel {
             let length = await!(self.recv_into_msg_and_buffer(&mut msg, max_resources, buffer))?;
 
             Ok(ChannelResourceReceiver {
-                channel: self,
+                _channel: self,
                 msg,
                 data_len: length,
             })
@@ -206,7 +206,7 @@ impl<'a> ChannelResourceSender<'a> {
 }
 
 pub struct ChannelResourceReceiver<'a> {
-    channel: &'a mut Channel,
+    _channel: &'a mut Channel,
     msg: MsgBuffer,
     data_len: usize,
 }

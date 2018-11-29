@@ -9,7 +9,7 @@ use sandbox_ipc_core::{
     channel::{Channel},
     resource::{Resource},
 };
-use sandbox_ipc_test::{IpcTest, IpcTestContext};
+use sandbox_ipc_test::{IpcRawTest, IpcTestContext};
 
 fn main() {
     ipc_tests! {
@@ -22,10 +22,10 @@ pub struct SendFile;
 const MESSAGE: &[u8] = b"Hello World!";
 
 #[cfg(unix)]
-impl IpcTest for SendFile {
+impl IpcRawTest for SendFile {
     const RESOURCE_TX_FROM_PARENT: bool = true;
 
-    fn parent(context: &mut IpcTestContext, mut channel: Channel) {
+    fn parent_raw(context: &mut IpcTestContext, mut channel: Channel) {
         use sandbox_ipc_core::os::unix::*;
 
         context.block_on(async {
@@ -37,7 +37,7 @@ impl IpcTest for SendFile {
         });
     }
 
-    fn child(context: &mut IpcTestContext, mut channel: Channel) {
+    fn child_raw(context: &mut IpcTestContext, mut channel: Channel) {
         use std::os::unix::prelude::*;
         use sandbox_ipc_core::os::unix::*;
 

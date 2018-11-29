@@ -4,7 +4,8 @@ use std::{env};
 use std::time::Duration;
 use std::process::{Command};
 
-use sandbox_ipc_core::channel::{Channel, ChildChannelMetadata, ChildChannelBuilder};
+use sandbox_ipc_core::channel::{Channel as RawChannel, ChildChannelMetadata as RawChildChannelMetadata, ChildChannelBuilder as RawChildChannelBuilder};
+use sandbox_ipc_serde::channel::{Channel};
 
 use futures::Future;
 use compio::local::LocalExecutor;
@@ -13,12 +14,34 @@ pub struct IpcTestContext {
     executor: LocalExecutor,
 }
 
-pub trait IpcTest {
+pub trait IpcRawTest {
+    const RESOURCE_TX_FROM_PARENT: bool = false;
+    const RESOURCE_TX_FROM_CHILD: bool = false;
+
+    fn parent_raw(context: &mut IpcTestContext, channel: RawChannel);
+    fn child_raw(context: &mut IpcTestContext, channel: RawChannel);
+}
+
+pub trait IpcTest: IpcRawTest {
     const RESOURCE_TX_FROM_PARENT: bool = false;
     const RESOURCE_TX_FROM_CHILD: bool = false;
 
     fn parent(context: &mut IpcTestContext, channel: Channel);
     fn child(context: &mut IpcTestContext, channel: Channel);
+}
+
+impl<T: IpcTest> IpcRawTest for T {
+    const RESOURCE_TX_FROM_PARENT: bool = <Self as IpcTest>::RESOURCE_TX_FROM_PARENT;
+    const RESOURCE_TX_FROM_CHILD: bool = <Self as IpcTest>::RESOURCE_TX_FROM_CHILD;
+
+    fn parent_raw(context: &mut IpcTestContext, channel: RawChannel) {
+        let channel = Channel::from_raw(channel).unwrap();
+        Self::parent(context, channel)
+    }
+    fn child_raw(context: &mut IpcTestContext, channel: RawChannel) {
+        let channel = Channel::from_raw(channel).unwrap();
+        Self::child(context, channel)
+    }
 }
 
 impl IpcTestContext {
@@ -44,7 +67,7 @@ macro_rules! ipc_tests {
         } else {
             let mut failed = false;
             $(
-                print!("test {} ... ", stringify!($test_name));
+                print!("test {}::{} ... ", module_path!(), stringify!($test_name));
                 let status = ::std::process::Command::new(::std::env::current_exe().unwrap())
                     .env("SANDBOX_IPC_TEST_NAME", stringify!($test_name))
                     .status()
@@ -64,17 +87,17 @@ macro_rules! ipc_tests {
     };
 }
 
-pub fn run_ipc_test<S: IpcTest>(child_channel_metadata: Option<String>) {
+pub fn run_ipc_test<S: IpcRawTest>(child_channel_metadata: Option<String>) {
     let mut context = IpcTestContext {
         executor: LocalExecutor::new().unwrap(),
     };
 
     if let Some(child_channel_metadata) = child_channel_metadata {
-        let channel_metadata: ChildChannelMetadata = serde_json::from_str(&child_channel_metadata).unwrap();
+        let channel_metadata: RawChildChannelMetadata = serde_json::from_str(&child_channel_metadata).unwrap();
         let channel = channel_metadata.into_channel(&context.executor.registrar()).unwrap();
-        S::child(&mut context, channel);
+        S::child_raw(&mut context, channel);
     } else {
-        let (mut child, channel) = ChildChannelBuilder::new(Command::new(env::current_exe().unwrap()))
+        let (mut child, channel) = RawChildChannelBuilder::new(Command::new(env::current_exe().unwrap()))
             .enable_resource_tx(S::RESOURCE_TX_FROM_PARENT)
             .enable_resource_rx(S::RESOURCE_TX_FROM_CHILD)
             .set_timeout(Some(Duration::from_secs(1)))
@@ -85,7 +108,7 @@ pub fn run_ipc_test<S: IpcTest>(child_channel_metadata: Option<String>) {
                     Ok(())
                 },
             ).unwrap();
-        S::parent(&mut context, channel);
+        S::parent_raw(&mut context, channel);
         let status = child.wait().unwrap();
         if !status.success() {
             ::std::process::exit(1);
