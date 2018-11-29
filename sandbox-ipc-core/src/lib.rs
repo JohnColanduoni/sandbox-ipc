@@ -7,13 +7,17 @@
 pub mod channel;
 pub mod resource;
 
-#[cfg_attr(target_os = "macos", path = "platform/macos.rs")]
+#[cfg_attr(target_os = "macos", path = "platform/macos/mod.rs")]
 mod platform;
+
+#[cfg(unix)]
+#[path = "platform/unix.rs"]
+mod unix;
 
 pub mod os {
     #[cfg(unix)]
     pub mod unix {
-        pub use crate::platform::unix::{ResourceExt, ResourceRefExt, ResourceTransceiverExt};
+        pub use crate::unix::{ResourceExt, ResourceRefExt, ResourceTransceiverExt};
     }
 
     #[cfg(target_os = "macos")]

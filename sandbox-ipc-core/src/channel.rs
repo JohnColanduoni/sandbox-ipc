@@ -2,8 +2,10 @@ use crate::platform;
 use crate::resource::{Resource, ResourceRef, ResourceTransceiver};
 
 use std::{io};
+use std::time::Duration;
+use std::process::{Command, Child};
 
-use serde::{Serializer, Deserializer};
+use serde::{Serialize, Deserializer};
 use futures_core::future::Future;
 use compio_core::queue::Registrar;
 
@@ -14,6 +16,18 @@ pub struct Channel {
 
 pub struct PreChannel {
     pub(crate) inner: platform::PreChannel,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ChildChannelMetadata {
+    inner: platform::ChildChannelMetadata,
+}
+
+pub struct ChildChannelBuilder {
+    pub(crate) command: Command,
+    pub(crate) resource_tx: bool,
+    pub(crate) resource_rx: bool,
+    pub(crate) timeout: Option<Duration>,
 }
 
 impl PreChannel {
@@ -89,8 +103,8 @@ impl<'a> ChannelResourceSender<'a> {
     /// The data required to reconstruct the resource on the other side of the connection will be written to `serializer`. It is the
     /// caller's responsibility to ensure that the data is embedded in a message in a manner suitable for the receiver to call
     /// `ChannelResourceReceiver::recv_resource`.
-    pub fn move_resource<S: Serializer>(&mut self, resource: Resource, serializer: S) -> io::Result<()> {
-        self.inner.move_resource(resource.inner, serializer)
+    pub fn move_resource(&mut self, resource: Resource) -> io::Result<impl Serialize> {
+        self.inner.move_resource(resource.inner)
     }
 
     /// Embeds a [`Resource`] in a message being constructed, copying ownership to the receiver.
@@ -98,8 +112,8 @@ impl<'a> ChannelResourceSender<'a> {
     /// The data required to reconstruct the resource on the other side of the connection will be written to `serializer`. It is the
     /// caller's responsibility to ensure that the data is embedded in a message in a manner suitable for the receiver to call
     /// `ChannelResourceReceiver::recv_resource`.
-    pub fn copy_resource<S: Serializer>(&mut self, resource: ResourceRef<'a>, serializer: S) -> io::Result<()> {
-        self.inner.copy_resource(resource.inner, serializer)
+    pub fn copy_resource(&mut self, resource: ResourceRef<'a>) -> io::Result<impl Serialize> {
+        self.inner.copy_resource(resource.inner)
     }
 
     /// Finishes sending the message
@@ -134,58 +148,72 @@ impl<'a> ChannelResourceReceiver<'a> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use futures_util::join;
-    use compio::local::LocalExecutor;
-
-    #[test]
-    fn make_prechannel() {
-        let (_a, _b) = PreChannel::pair().unwrap();
+impl ChildChannelMetadata {
+    pub fn into_pre_channel(self) -> io::Result<(PreChannel, Option<ResourceTransceiver>)> {
+        let (channel, transceiver) = self.inner.into_pre_channel()?;
+        Ok((
+            PreChannel {
+                inner: channel,
+            },
+            transceiver.map(|inner| ResourceTransceiver { inner }),
+        ))
     }
 
+    pub fn into_channel(self, queue: &Registrar) -> io::Result<Channel> {
+        let (channel, transceiver) = self.into_pre_channel()?;
+        if let Some(transceiver) = transceiver {
+            channel.into_resource_channel(queue, transceiver)
+        } else {
+            channel.into_channel(queue)
+        }
+    }
+}
 
-    #[cfg(unix)]
-    #[test]
-    fn send_fd() {
-        use std::{fs};
-        use std::io::{Read, Write, Seek, SeekFrom};
-        use std::os::unix::prelude::*;
-        
+impl ChildChannelBuilder {
+    pub fn new(command: Command) -> Self {
+        ChildChannelBuilder {
+            command,
+            resource_tx: false,
+            resource_rx: false,
+            timeout: None,
+        }
+    }
 
-        use crate::os::unix::*;
+    pub fn enable_resource_tx(&mut self, enabled: bool) -> &mut Self {
+        self.resource_tx = enabled;
+        self
+    }
 
-        let mut executor = LocalExecutor::new().unwrap();
-        let (a, b) = PreChannel::pair().unwrap();
-        let mut a = a.into_resource_channel(&executor.registrar(), ResourceTransceiver::inline_tx_only()).unwrap();
-        let mut b = b.into_resource_channel(&executor.registrar(), ResourceTransceiver::inline_rx_only()).unwrap();
+    pub fn enable_resource_rx(&mut self, enabled: bool) -> &mut Self {
+        self.resource_rx = enabled;
+        self
+    }
 
-        let message = b"Hello world!";
+    pub fn set_timeout(&mut self, timeout: Option<Duration>) -> &mut Self {
+        self.timeout = timeout;
+        self
+    }
 
-        executor.block_on(async {
-            let recv = async {
-                let mut buffer = vec![0u8; 1024];
-                let mut receiver = await!(b.recv_with_resources(1, &mut buffer)).unwrap();
-                let resource = receiver.recv_resource(&mut serde_json::Deserializer::from_slice(&buffer[..receiver.data_len()])).unwrap();
-                let mut f = unsafe { fs::File::from_raw_fd(resource.into_raw_fd().unwrap()) };
-                f.seek(SeekFrom::Start(0)).unwrap();
-                let mut file_buffer = Vec::new();
-                f.read_to_end(&mut file_buffer).unwrap();
-                assert_eq!(message, &*file_buffer);
-            };
+    pub fn spawn_pre_channel<RM>(&mut self, relay_metadata: RM) -> io::Result<(Child, PreChannel, Option<ResourceTransceiver>)> where
+        RM: for<'a> FnOnce(&'a mut Command, &'a ChildChannelMetadata) -> io::Result<()>,
+    {
+        let (child, inner, transceiver) = platform::PreChannel::establish_with_child(self, |command, metadata| {
+            relay_metadata(command, &ChildChannelMetadata {
+                inner: metadata,
+            })
+        })?;
+        Ok((child, PreChannel { inner }, transceiver.map(|inner| ResourceTransceiver { inner })))
+    }
 
-            let send = async {
-                let mut f = tempfile::tempfile().unwrap();
-                f.write_all(message).unwrap();
-                let mut buffer = Vec::new();
-                let mut sender = a.send_with_resources().unwrap();
-                sender.move_resource(Resource::from_fd(f), &mut serde_json::Serializer::new(&mut buffer)).unwrap();
-                await!(sender.finish(&buffer)).unwrap();
-            };
-
-            join!(recv, send);
-        });
+    pub fn spawn<RM>(&mut self, queue: &Registrar, relay_metadata: RM) -> io::Result<(Child, Channel)> where
+        RM: for<'a> FnOnce(&'a mut Command, &'a ChildChannelMetadata) -> io::Result<()>,
+    {
+        let (child, channel, transceiver) = self.spawn_pre_channel(relay_metadata)?;
+        let channel = if let Some(transceiver) = transceiver {
+            channel.into_resource_channel(queue, transceiver)?
+        } else {
+            channel.into_channel(queue)?
+        };
+        Ok((child, channel))
     }
 }

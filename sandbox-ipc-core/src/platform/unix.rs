@@ -17,3 +17,12 @@ pub trait ResourceTransceiverExt {
     fn inline_tx_only() -> Self;
     fn inline_rx_only() -> Self;
 }
+
+#[derive(Debug)]
+pub struct ScopedFd(pub RawFd);
+
+impl Drop for ScopedFd {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.0); }
+    }
+}

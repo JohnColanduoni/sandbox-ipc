@@ -42,5 +42,5 @@ compio = "0.1"
 tempfile = "3.0"
 
 [[test]]
-name = "generic_resources"
+name = "send_file"
 harness = false

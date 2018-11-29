@@ -14,14 +14,11 @@ pub struct IpcTestContext {
 }
 
 pub trait IpcTest {
-    type T;
-    type R;
-
     const RESOURCE_TX_FROM_PARENT: bool = false;
     const RESOURCE_TX_FROM_CHILD: bool = false;
 
-    fn parent(context: &mut IpcTestContext, channel: Channel<Self::T, Self::R>);
-    fn child(context: &mut IpcTestContext, channel: Channel<Self::R, Self::T>);
+    fn parent(context: &mut IpcTestContext, channel: Channel);
+    fn child(context: &mut IpcTestContext, channel: Channel);
 }
 
 impl IpcTestContext {
@@ -73,11 +70,11 @@ pub fn run_ipc_test<S: IpcTest>(child_channel_metadata: Option<String>) {
     };
 
     if let Some(child_channel_metadata) = child_channel_metadata {
-        let channel_metadata: ChildChannelMetadata<S::R, S::T> = serde_json::from_str(&child_channel_metadata).unwrap();
+        let channel_metadata: ChildChannelMetadata = serde_json::from_str(&child_channel_metadata).unwrap();
         let channel = channel_metadata.into_channel(&context.executor.registrar()).unwrap();
         S::child(&mut context, channel);
     } else {
-        let (mut child, channel) = ChildChannelBuilder::<S::T, S::R>::new(Command::new(env::current_exe().unwrap()))
+        let (mut child, channel) = ChildChannelBuilder::new(Command::new(env::current_exe().unwrap()))
             .enable_resource_tx(S::RESOURCE_TX_FROM_PARENT)
             .enable_resource_rx(S::RESOURCE_TX_FROM_CHILD)
             .set_timeout(Some(Duration::from_secs(1)))

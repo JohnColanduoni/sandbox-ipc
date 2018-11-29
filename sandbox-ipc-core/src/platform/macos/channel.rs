@@ -1,5 +1,5 @@
-#[path = "unix.rs"]
-pub mod unix;
+use super::{Resource, ResourceRef, ResourceTransceiver};
+use crate::unix::{ScopedFd};
 
 use std::{io, mem, slice, fmt};
 use std::pin::{Pin, Unpin};
@@ -7,12 +7,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::process::{Command, Child};
 use std::ffi::CString;
-use std::os::raw::{c_int, c_uint, c_char};
-use std::os::unix::prelude::*;
+use std::os::raw::{c_int, c_char};
 
 use uuid::Uuid;
 use rand::Rng;
-use serde::{Serialize, Serializer, Deserialize, Deserializer};
+use serde::{Serialize, Deserialize, Deserializer};
 use futures_core::{
     future::Future,
     task::{Poll, LocalWaker},
@@ -21,7 +20,7 @@ use futures_util::try_ready;
 use compio_core::queue::Registrar;
 use compio_core::os::macos::{RegistrarExt, PortRegistration, RawPort};
 use mach_port::{Port, MsgBuffer, PortMoveMode, PortCopyMode, MsgDescriptorKindMut};
-use mach_core::{mach_call, mach_kern_call};
+use mach_core::{mach_kern_call};
 
 // TODO: notification of broken pipe (i.e. other side of channel dropped)
 #[derive(Clone)]
@@ -49,32 +48,6 @@ pub struct ChildChannelMetadata {
     token: [u8; 32],
     resource_rx: bool,
     resource_tx: bool,
-}
-
-#[derive(Debug)]
-pub enum Resource {
-    Port(PortMoveMode, Port),
-    Fd(ScopedFd),
-}
-
-#[derive(Debug)]
-pub struct ScopedFd(c_int);
-
-impl Drop for ScopedFd {
-    fn drop(&mut self) {
-        unsafe { libc::close(self.0); }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum ResourceRef<'a> {
-    Port(PortCopyMode, &'a Port),
-    Fd(c_int),
-}
-
-#[derive(Debug)]
-pub enum ResourceTransceiver {
-    Mach { tx: bool, rx: bool },
 }
 
 // Used only for serialization purposes
@@ -181,7 +154,7 @@ pub struct ChannelResourceSender<'a> {
 }
 
 impl<'a> ChannelResourceSender<'a> {
-    pub fn move_resource<S: Serializer>(&mut self, resource: Resource, serializer: S) -> io::Result<()> {
+    pub fn move_resource(&mut self, resource: Resource) -> io::Result<impl Serialize> {
         let (port, mode, kind) = match resource {
             Resource::Port(mode, port) => (port.into_raw_port(), mode, ResourceKind::Port),
             Resource::Fd(fd) => unsafe {
@@ -196,12 +169,10 @@ impl<'a> ChannelResourceSender<'a> {
         };
         let descriptor_index = self.msg.descriptors().len();
         unsafe { self.msg.move_right_raw(mode, port); }
-        (descriptor_index as u32, kind).serialize(serializer)
-            .map(|_| ())
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("failed to serialize resource metadata: {}", err)))
+        Ok((descriptor_index as u32, kind))
     }
 
-    pub fn copy_resource<S: Serializer>(&mut self, resource: ResourceRef<'a>, serializer: S) -> io::Result<()> {
+    pub fn copy_resource(&mut self, resource: ResourceRef<'a>) -> io::Result<impl Serialize> {
         let (port, mode, kind) = match resource {
             ResourceRef::Port(mode, port) => (port.as_raw_port(), mode, ResourceKind::Port),
             ResourceRef::Fd(fd) => unsafe {
@@ -218,9 +189,7 @@ impl<'a> ChannelResourceSender<'a> {
         };
         let descriptor_index = self.msg.descriptors().len();
         unsafe { self.msg.copy_right_raw(mode, port); }
-        (descriptor_index as u32, kind).serialize(serializer)
-            .map(|_| ())
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("failed to serialize resource metadata: {}", err)))
+        Ok((descriptor_index as u32, kind))
     }
 
     pub fn finish<'b>(mut self, buffer: &'b [u8]) -> impl Future<Output=io::Result<()>> + 'a + 'b where
@@ -376,7 +345,7 @@ impl PreChannel {
         })
     }
 
-    pub fn establish_with_child<T, R, RM>(builder: &mut crate::channel::ChildChannelBuilder<T, R>, relay_metadata: RM) -> io::Result<(Child, Self, Option<ResourceTransceiver>)> where
+    pub fn establish_with_child<RM>(builder: &mut crate::channel::ChildChannelBuilder, relay_metadata: RM) -> io::Result<(Child, Self, Option<ResourceTransceiver>)> where
         RM: for<'a> FnOnce(&'a mut Command, ChildChannelMetadata) -> io::Result<()>,
     {
         // The process for launching a child that has a mach channel with us is as follows:
@@ -491,132 +460,6 @@ impl ChildChannelMetadata {
         };
 
         Ok((ours, resource_transceiver))
-    }
-}
-
-pub trait ResourceExt: Sized {
-    fn from_mach_port(mode: PortMoveMode, port: Port) -> Self;
-    fn as_mach_port(&self) -> Option<&Port>;
-    fn into_mach_port(self) -> Result<Port, Self>;
-}
-
-impl ResourceExt for crate::resource::Resource {
-    fn from_mach_port(mode: PortMoveMode, port: Port) -> Self {
-        crate::resource::Resource { inner: Resource::Port(mode, port) }
-    }
-
-    fn as_mach_port(&self) -> Option<&Port> {
-        match &self.inner {
-            Resource::Port(_, port) => Some(port),
-            _ => None,
-        }
-    }
-
-    fn into_mach_port(self) -> Result<Port, Self> {
-        match self.inner {
-            Resource::Port(_, port) => Ok(port),
-            _ => Err(self),
-        }
-    }
-}
-
-impl self::unix::ResourceExt for crate::resource::Resource {
-    fn from_fd<F: IntoRawFd>(fd: F) -> Self {
-        unsafe { Self::from_raw_fd(fd.into_raw_fd()) }
-    }
-
-    fn as_raw_fd(&self) -> Option<c_int> {
-        if let Resource::Fd(fd) = &self.inner {
-            Some(fd.0)
-        } else {
-            None
-        }
-    }
-
-    fn into_raw_fd(self) -> Result<c_int, Self> {
-        if let Resource::Fd(fd) = self.inner {
-            let fd_int = fd.0;
-            mem::forget(fd);
-            Ok(fd_int)
-        } else {
-            Err(self)
-        }
-    }
-}
-
-impl FromRawFd for crate::resource::Resource {
-    unsafe fn from_raw_fd(fd: c_int) -> Self {
-        crate::resource::Resource { inner: Resource::Fd(ScopedFd(fd)) }
-    }
-}
-
-pub trait ResourceRefExt<'a> {
-    fn with_mach_port(mode: PortCopyMode, port: &'a Port) -> Self;
-    fn as_mach_port(&self) -> Option<&Port>;
-}
-
-impl<'a> ResourceRefExt<'a> for crate::resource::ResourceRef<'a> {
-    fn with_mach_port(mode: PortCopyMode, port: &'a Port) -> Self {
-        crate::resource::ResourceRef { inner: ResourceRef::Port(mode, port) }
-    }
-    fn as_mach_port(&self) -> Option<&Port> {
-        if let ResourceRef::Port(_, port) = self.inner {
-            Some(port)
-        } else {
-            None
-        }
-    }
-}
-
-impl<'a> self::unix::ResourceRefExt<'a> for crate::resource::ResourceRef<'a> {
-    fn with_fd<F: AsRawFd>(fd: &'a F) -> Self {
-        unsafe { Self::with_raw_fd(fd.as_raw_fd()) }
-    }
-    unsafe fn with_raw_fd(fd: c_int) -> Self {
-        crate::resource::ResourceRef { inner: ResourceRef::Fd(fd) }
-    }
-    fn as_raw_fd(&self) -> Option<c_int> {
-        if let ResourceRef::Fd(fd) = self.inner {
-            Some(fd)
-        } else {
-            None
-        }
-    }
-}
-
-pub trait ResourceTransceiverExt {
-    fn mach() -> Self;
-    fn mach_tx_only() -> Self;
-    fn mach_rx_only() -> Self;
-}
-
-impl ResourceTransceiverExt for crate::resource::ResourceTransceiver {
-    fn mach() -> Self {
-        crate::resource::ResourceTransceiver {
-            inner: ResourceTransceiver::Mach { tx: true, rx: true },
-        }
-    }
-    fn mach_tx_only() -> Self {
-        crate::resource::ResourceTransceiver {
-            inner: ResourceTransceiver::Mach { tx: true, rx: false },
-        }
-    }
-    fn mach_rx_only() -> Self {
-        crate::resource::ResourceTransceiver {
-            inner: ResourceTransceiver::Mach { tx: false, rx: true },
-        }
-    }
-}
-
-impl self::unix::ResourceTransceiverExt for crate::resource::ResourceTransceiver {
-    fn inline() -> Self {
-        Self::mach()
-    }
-    fn inline_tx_only() -> Self {
-        Self::mach_tx_only()
-    }
-    fn inline_rx_only() -> Self {
-        Self::mach_rx_only()
     }
 }
 
