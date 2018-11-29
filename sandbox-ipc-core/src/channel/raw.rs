@@ -3,6 +3,7 @@ use crate::resource::{Resource, ResourceRef, ResourceTransceiver};
 
 use std::{io};
 
+use serde::{Serializer, Deserializer};
 use futures_core::future::Future;
 use compio_core::queue::Registrar;
 
@@ -80,24 +81,20 @@ pub struct ChannelResourceSender<'a> {
 impl<'a> ChannelResourceSender<'a> {
     /// Embeds a [`Resource`] in a message being constructed, transfering ownership to the receiver.
     /// 
-    /// The data required to reconstruct the resource on the other side of the connection will be written to `buffer`. It is the
+    /// The data required to reconstruct the resource on the other side of the connection will be written to `serializer`. It is the
     /// caller's responsibility to ensure that the data is embedded in a message in a manner suitable for the receiver to call
     /// `ChannelResourceReceiver::recv_resource`.
-    /// 
-    /// Returns the number of bytes written to `buffer`.
-    pub fn move_resource<W: io::Write>(&mut self, resource: Resource, buffer: &mut W) -> io::Result<usize> {
-        self.inner.move_resource(resource.inner, buffer)
+    pub fn move_resource<S: Serializer>(&mut self, resource: Resource, serializer: S) -> io::Result<()> {
+        self.inner.move_resource(resource.inner, serializer)
     }
 
     /// Embeds a [`Resource`] in a message being constructed, copying ownership to the receiver.
     /// 
-    /// The data required to reconstruct the resource on the other side of the connection will be written to `buffer`. It is the
+    /// The data required to reconstruct the resource on the other side of the connection will be written to `serializer`. It is the
     /// caller's responsibility to ensure that the data is embedded in a message in a manner suitable for the receiver to call
     /// `ChannelResourceReceiver::recv_resource`.
-    /// 
-    /// Returns the number of bytes written to `buffer`.
-    pub fn copy_resource<W: io::Write>(&mut self, resource: ResourceRef<'a>, buffer: &mut W) -> io::Result<usize> {
-        self.inner.copy_resource(resource.inner, buffer)
+    pub fn copy_resource<S: Serializer>(&mut self, resource: ResourceRef<'a>, serializer: S) -> io::Result<()> {
+        self.inner.copy_resource(resource.inner, serializer)
     }
 
     /// Finishes sending the message
@@ -126,8 +123,8 @@ impl<'a> ChannelResourceReceiver<'a> {
     /// 
     /// On some platforms, failing to call `recv_resource` for all resources in the message may cause the resources to leak
     /// in certain circumstances.
-    pub fn recv_resource(&mut self, data: &[u8]) -> io::Result<Resource> {
-        let inner = self.inner.recv_resource(data)?;
+    pub fn recv_resource<'de, D: Deserializer<'de>>(&mut self, deserializer: D) -> io::Result<Resource> {
+        let inner = self.inner.recv_resource(deserializer)?;
         Ok(Resource { inner })
     }
 }
@@ -166,7 +163,7 @@ mod tests {
             let recv = async {
                 let mut buffer = vec![0u8; 1024];
                 let mut receiver = await!(b.recv_with_resources(1, &mut buffer)).unwrap();
-                let resource = receiver.recv_resource(&buffer[..receiver.data_len()]).unwrap();
+                let resource = receiver.recv_resource(&mut serde_json::Deserializer::from_slice(&buffer[..receiver.data_len()])).unwrap();
                 let mut f = unsafe { fs::File::from_raw_fd(resource.into_raw_fd().unwrap()) };
                 f.seek(SeekFrom::Start(0)).unwrap();
                 let mut file_buffer = Vec::new();
@@ -179,7 +176,7 @@ mod tests {
                 f.write_all(message).unwrap();
                 let mut buffer = Vec::new();
                 let mut sender = a.send_with_resources().unwrap();
-                sender.move_resource(Resource::from_fd(f), &mut buffer).unwrap();
+                sender.move_resource(Resource::from_fd(f), &mut serde_json::Serializer::new(&mut buffer)).unwrap();
                 await!(sender.finish(&buffer)).unwrap();
             };
 

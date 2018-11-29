@@ -1,6 +1,7 @@
 #![feature(futures_api, async_await, await_macro, pin, arbitrary_self_types)]
 
 #[macro_use] extern crate log;
+#[macro_use] extern crate serde_derive;
 
 #[macro_use] mod macros;
 pub mod channel;

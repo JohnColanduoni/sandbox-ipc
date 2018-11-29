@@ -1,12 +1,17 @@
 use crate::platform;
 
-use std::{fmt};
+use std::{fmt, mem, io};
+use std::cell::Cell;
+use std::io::Write;
+
+use serde::ser::{Error as SerError};
 
 /// An owned raw OS resources transmittable over a [`Channel`](crate::channel::Channel).
 pub struct Resource {
     pub(crate) inner: platform::Resource,
 }
 
+#[derive(Clone)]
 /// A reference to a raw OS resources transmittable over a [`Channel`](crate::channel::Channel).
 pub struct ResourceRef<'a> {
     pub(crate) inner: platform::ResourceRef<'a>,
@@ -51,6 +56,27 @@ pub struct ResourceTransceiver {
     pub(crate) inner: platform::ResourceTransceiver,
 }
 
+/// Trait that facilitates the serialization of data containing OS resources by `serde`.
+/// 
+/// A `ResourceSerializer` can be set in a (thread-local) context to allow [`Serialize`](serde::ser::Serialize) 
+/// implementations to transfer OS resources out of band, while embeding the necessary metadata for reconstruction
+/// inside the serialized data. In particular, [`Channel`](crate::channel::Channel) provides an appropriate implementation
+/// when sending a message.
+pub trait ResourceSerializer {
+    fn serialize_owned(&self, resource: Resource, serializer: &mut erased_serde::Serializer) -> Result<(), erased_serde::Error>;
+    fn serialize_ref(&self, resource: ResourceRef, serializer: &mut erased_serde::Serializer) -> Result<(), erased_serde::Error>;
+}
+
+/// Trait that facilitates the deserialization of data containing OS resources by `serde`.
+/// 
+/// A `ResourceDeserializer` can be set in a (thread-local) context to allow [`Deserialize`](serde::de::Deserialize) 
+/// implementations to transfer OS resources out of band, while extracting the necessary metadata for reconstruction
+/// from the serialized data. In particular, [`Channel`](crate::channel::Channel) provides an appropriate implementation
+/// when receiving a message.
+pub trait ResourceDeserializer {
+    fn deserialize(&self, deserializer: &mut erased_serde::Deserializer) -> Result<Resource, erased_serde::Error>;
+}
+
 passthrough_debug!(Resource => inner);
 
 impl<'a> fmt::Debug for ResourceRef<'a> {
@@ -60,3 +86,51 @@ impl<'a> fmt::Debug for ResourceRef<'a> {
 }
 
 passthrough_debug!(ResourceTransceiver => inner);
+
+thread_local!(static CURRENT_RESOURCE_SERIALIZER: Cell<Option<*const dyn ResourceSerializer>> = Cell::new(None));
+
+impl ResourceSerializer {
+    #[inline]
+    pub fn set<F, R>(serializer: &dyn ResourceSerializer, f: F) -> R where
+        F: FnOnce() -> R,
+    {
+        unsafe {
+            CURRENT_RESOURCE_SERIALIZER.with(|r| {
+                let previous = r.replace(Some(mem::transmute_copy::<_, &(dyn ResourceSerializer + 'static)>(&serializer) as *const dyn ResourceSerializer));
+                let guard = ResourceSerializerGuard(previous);
+                let result = f();
+                mem::drop(guard);
+                result
+            })
+        }
+    }
+
+    #[inline]
+    pub fn has_current() -> bool {
+        CURRENT_RESOURCE_SERIALIZER.with(|r| r.get().is_some())
+    }
+
+    #[inline]
+    pub fn serialize_with_current<F, R, E>(f: F) -> Result<R, E> where
+        F: for<'a> FnOnce(&'a ResourceSerializer) -> Result<R, E>,
+        E: serde::ser::Error,
+    {
+        CURRENT_RESOURCE_SERIALIZER.with(|r| {
+            if let Some(serializer) = r.get() {
+                unsafe { f(&*serializer) }
+            } else {
+                Err(E::custom("attempted to serialize OS resource in invalid context"))
+            }
+        })
+    }
+}
+
+struct ResourceSerializerGuard(Option<*const dyn ResourceSerializer>);
+
+impl Drop for ResourceSerializerGuard {
+    fn drop(&mut self) {
+        CURRENT_RESOURCE_SERIALIZER.with(|r| {
+            r.set(self.0.take());
+        });
+    }
+}

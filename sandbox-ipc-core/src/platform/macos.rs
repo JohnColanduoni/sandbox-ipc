@@ -7,7 +7,7 @@ use std::time::Duration;
 use std::os::raw::c_int;
 use std::os::unix::prelude::*;
 
-use byteorder::{ReadBytesExt, WriteBytesExt, NativeEndian};
+use serde::{Serialize, Serializer, Deserialize, Deserializer};
 use futures_core::{
     future::Future,
     task::{Poll, LocalWaker},
@@ -44,7 +44,7 @@ impl Drop for ScopedFd {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ResourceRef<'a> {
     Port(PortCopyMode, &'a Port),
     Fd(c_int),
@@ -56,7 +56,7 @@ pub enum ResourceTransceiver {
 }
 
 // Used only for serialization purposes
-#[repr(u32)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 enum ResourceKind {
     Port,
     Fd,
@@ -150,7 +150,7 @@ pub struct ChannelResourceSender<'a> {
 }
 
 impl<'a> ChannelResourceSender<'a> {
-    pub fn move_resource<W: io::Write>(&mut self, resource: Resource, buffer: &mut W) -> io::Result<usize> {
+    pub fn move_resource<S: Serializer>(&mut self, resource: Resource, serializer: S) -> io::Result<()> {
         let (port, mode, kind) = match resource {
             Resource::Port(mode, port) => (port.into_raw_port(), mode, ResourceKind::Port),
             Resource::Fd(fd) => unsafe {
@@ -165,12 +165,12 @@ impl<'a> ChannelResourceSender<'a> {
         };
         let descriptor_index = self.msg.descriptors().len();
         unsafe { self.msg.move_right_raw(mode, port); }
-        buffer.write_u32::<NativeEndian>(descriptor_index as u32)?;
-        buffer.write_u32::<NativeEndian>(kind as u32)?;
-        Ok(mem::size_of::<u32>() * 2)
+        (descriptor_index as u32, kind).serialize(serializer)
+            .map(|_| ())
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("failed to serialize resource metadata: {}", err)))
     }
 
-    pub fn copy_resource<W: io::Write>(&mut self, resource: ResourceRef<'a>, buffer: &mut W) -> io::Result<usize> {
+    pub fn copy_resource<S: Serializer>(&mut self, resource: ResourceRef<'a>, serializer: S) -> io::Result<()> {
         let (port, mode, kind) = match resource {
             ResourceRef::Port(mode, port) => (port.as_raw_port(), mode, ResourceKind::Port),
             ResourceRef::Fd(fd) => unsafe {
@@ -187,9 +187,9 @@ impl<'a> ChannelResourceSender<'a> {
         };
         let descriptor_index = self.msg.descriptors().len();
         unsafe { self.msg.copy_right_raw(mode, port); }
-        buffer.write_u32::<NativeEndian>(descriptor_index as u32)?;
-        buffer.write_u32::<NativeEndian>(kind as u32)?;
-        Ok(mem::size_of::<u32>() * 2)
+        (descriptor_index as u32, kind).serialize(serializer)
+            .map(|_| ())
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("failed to serialize resource metadata: {}", err)))
     }
 
     pub fn finish<'b>(mut self, buffer: &'b [u8]) -> impl Future<Output=io::Result<()>> + 'a + 'b where
@@ -224,15 +224,10 @@ impl<'a> ChannelResourceReceiver<'a> {
         self.data_len
     }
 
-    pub fn recv_resource(&mut self, data: &[u8]) -> io::Result<Resource> {
-        if data.len() != 2 * mem::size_of::<u32>() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "data too short to be a resource"));
-        }
-        let mut data = io::Cursor::new(data);
-        let descriptor_index = data.read_u32::<NativeEndian>().unwrap();
-        let kind = ResourceKind::from_u32(data.read_u32::<NativeEndian>().unwrap())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid resource kind in data"))?;
-        
+    pub fn recv_resource<'de, D: Deserializer<'de>>(&mut self, deserializer: D) -> io::Result<Resource> {
+        let (descriptor_index, kind): (u32, ResourceKind) = Deserialize::deserialize(deserializer)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, format!("failed to deserialize resource metadata: {}", err)))?;
+
         let descriptor = self.msg.descriptors_mut().nth(descriptor_index as usize)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "out of range descriptor index in data"))?;
 
@@ -470,18 +465,6 @@ impl self::unix::ResourceTransceiverExt for crate::resource::ResourceTransceiver
     }
     fn inline_rx_only() -> Self {
         Self::mach_rx_only()
-    }
-}
-
-impl ResourceKind {
-    fn from_u32(x: u32) -> Option<Self> {
-        const PORT_U32: u32 = ResourceKind::Port as u32;
-        const FD_U32: u32 = ResourceKind::Fd as u32;
-        match x {
-            PORT_U32 => Some(ResourceKind::Port),
-            FD_U32 => Some(ResourceKind::Fd),
-            _ => None,
-        }
     }
 }
 
