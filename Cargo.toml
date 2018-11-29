@@ -1,53 +1,11 @@
-# [package]
-# name = "sandbox-ipc"
-# version = "0.5.0"
-# edition = "2018"
+[package]
+name = "sandbox-ipc"
+version = "0.5.0"
+edition = "2018"
 
-# description = "An IPC implementation with an eye toward enabling privilege separation."
-# repository = "https://github.com/JohnColanduoni/sandbox-ipc"
-# authors = ["john@colanduoni.com"]
-# license = "MIT OR Apache-2.0"
-
-# autotests = false
-
-# [dependencies]
-# log = "0.4"
-# uuid = { version = "0.6", features = ["v4", "serde"] }
-# rand = "0.5"
-# lazy_static = "1"
-
-# serde = { version = "1", features = ["rc"] }
-# serde_derive = "1"
-# bincode = "1"
-
-# futures_core = { package = "futures-core-preview", version = "0.3.0-alpha.9" }
-# futures_util = { package = "futures-util-preview", version = "0.3.0-alpha.9" }
-# compio-core = { version = "0.1", git = "https://github.com/JohnColanduoni/compio", rev = "404802e1e6a7addfe865c2d96ac04ddbbcaf389d" }
-# compio-ipc = { version = "0.1", git = "https://github.com/JohnColanduoni/compio", rev = "404802e1e6a7addfe865c2d96ac04ddbbcaf389d" }
-
-# [target.'cfg(target_os = "windows")'.dependencies]
-# winapi = { version = "0.3", features = ["minwindef", "ntdef", "guiddef", "winsock2", "namedpipeapi", "ioapiset", "memoryapi", "sysinfoapi", "synchapi"] }
-# winhandle = "0.3"
-# widestring = "0.4"
-
-# [target.'cfg(unix)'.dependencies]
-# libc = "0.2"
-
-# [dev-dependencies]
-# serde_json = "1"
-# compio = { version = "0.1", git = "https://github.com/JohnColanduoni/compio", rev = "404802e1e6a7addfe865c2d96ac04ddbbcaf389d" }
-
-# [[test]]
-# name = "child_channel"
-# harness = false
-
-# [[test]]
-# name = "named_channel"
-# harness = false
-
-# [[bench]]
-# name = "shm_queue"
-# harness = false
+[dependencies]
+sandbox-ipc-core = { path = "sandbox-ipc-core" }
+sandbox-ipc-serde = { path = "sandbox-ipc-serde" }
 
 [workspace]
 members = ["sandbox-ipc-core", "sandbox-ipc-serde", "sandbox-ipc-test"]

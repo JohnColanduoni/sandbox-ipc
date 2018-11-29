@@ -24,7 +24,7 @@ winhandle = "0.3"
 widestring = "0.4"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = "0.2.44"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach-core = "0.1.0"

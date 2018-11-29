@@ -7,3 +7,6 @@ edition = "2018"
 sandbox-ipc-core = { path = "../sandbox-ipc-core" }
 
 serde = "1.0"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.44"
