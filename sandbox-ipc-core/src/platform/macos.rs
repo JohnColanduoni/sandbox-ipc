@@ -1,8 +1,9 @@
 #[path = "unix.rs"]
 pub mod unix;
 
-use std::{io, mem, slice};
+use std::{io, mem, slice, fmt};
 use std::pin::{Pin, Unpin};
+use std::sync::Arc;
 use std::time::Duration;
 use std::os::raw::c_int;
 use std::os::unix::prelude::*;
@@ -17,13 +18,20 @@ use compio_core::queue::Registrar;
 use compio_core::os::macos::{RegistrarExt, PortRegistration, RawPort};
 use mach_port::{Port, MsgBuffer, PortMoveMode, PortCopyMode, MsgDescriptorKindMut};
 
+#[derive(Clone)]
 pub struct Channel {
+    inner: Arc<_Channel>,
+    rx_registration: PortRegistration,
+}
+
+#[derive(Debug)]
+struct _Channel {
     tx: Port,
     rx: Port,
-    rx_registration: PortRegistration,
     resource_tranceiver: Option<ResourceTransceiver>,
 }
 
+#[derive(Debug)]
 pub struct PreChannel {
     tx: Port,
     rx: Port,
@@ -78,7 +86,7 @@ impl Channel {
     }
 
     pub fn send_with_resources(&mut self) -> io::Result<ChannelResourceSender> {
-        match self.resource_tranceiver {
+        match self.inner.resource_tranceiver {
             Some(ResourceTransceiver::Mach { tx: true, .. }) => {
                 // TODO: reuse MsgBuffers
                 Ok(ChannelResourceSender {
@@ -94,7 +102,7 @@ impl Channel {
         'a: 'b,
     {
         async move {
-            match self.resource_tranceiver {
+            match self.inner.resource_tranceiver {
                 Some(ResourceTransceiver::Mach { rx: true, .. }) => {},
                 _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, "this Channel does not support resource receiving")),
             }
@@ -141,6 +149,15 @@ impl Channel {
         dest.copy_from_slice(source);
 
         Ok(length)
+    }
+}
+
+impl fmt::Debug for Channel {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Channel")
+            .field("tx", &self.inner.tx)
+            .field("rx", &self.inner.rx)
+            .finish()
     }
 }
 
@@ -272,7 +289,7 @@ impl<'a> Future for ChannelSendFuture<'a> {
     fn poll(mut self: Pin<&mut Self>, _waker: &LocalWaker) -> Poll<io::Result<()>> {
         // FIXME: implement async send with MACH_SEND_TIMEOUT and MACH_SEND_NOTIFY
         let this = &mut *self;
-        this.channel.tx.send(&mut this.msg, None)?;
+        this.channel.inner.tx.send(&mut this.msg, None)?;
         Poll::Ready(Ok(()))
     }
 }
@@ -290,7 +307,7 @@ impl<'a> Future for ChannelRecvFuture<'a> {
     fn poll(mut self: Pin<&mut Self>, waker: &LocalWaker) -> Poll<io::Result<()>> {
         let this = &mut *self;
         try_ready!(this.channel.rx_registration.poll_recv_ready(waker));
-        match this.channel.rx.recv(this.msg, Some(Duration::new(0, 0))) {
+        match this.channel.inner.rx.recv(this.msg, Some(Duration::new(0, 0))) {
             Ok(()) => (),
             Err(ref err) if err.kind() == io::ErrorKind::TimedOut => {
                 this.channel.rx_registration.clear_recv_ready(waker)?;
@@ -324,20 +341,24 @@ impl PreChannel {
     pub fn into_channel(self, queue: &Registrar) -> io::Result<Channel> {
         let rx_registration = queue.register_mach_port(self.rx.as_raw_port())?;
         Ok(Channel {
-            tx: self.tx,
-            rx: self.rx,
+            inner: Arc::new(_Channel {
+                tx: self.tx,
+                rx: self.rx,
+                resource_tranceiver: None,
+            }),
             rx_registration,
-            resource_tranceiver: None,
         })
     }
 
     pub fn into_resource_channel(self, queue: &Registrar, resource_tranceiver: ResourceTransceiver) -> io::Result<Channel> {
         let rx_registration = queue.register_mach_port(self.rx.as_raw_port())?;
         Ok(Channel {
-            tx: self.tx,
-            rx: self.rx,
+            inner: Arc::new(_Channel {
+                tx: self.tx,
+                rx: self.rx,
+                resource_tranceiver: Some(resource_tranceiver),
+            }),
             rx_registration,
-            resource_tranceiver: Some(resource_tranceiver),
         })
     }
 }

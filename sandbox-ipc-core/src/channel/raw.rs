@@ -7,6 +7,7 @@ use serde::{Serializer, Deserializer};
 use futures_core::future::Future;
 use compio_core::queue::Registrar;
 
+#[derive(Clone)]
 pub struct Channel {
     pub(crate) inner: platform::Channel,
 }
@@ -36,6 +37,8 @@ impl PreChannel {
         })
     }
 }
+
+passthrough_debug!(PreChannel => inner);
 
 impl Channel {
     pub fn send<'a>(&'a mut self, buffer: &'a [u8]) -> impl Future<Output=io::Result<()>> + Send + 'a {
@@ -73,6 +76,8 @@ impl Channel {
         }
     }
 }
+
+passthrough_debug!(Channel => inner);
 
 pub struct ChannelResourceSender<'a> {
     inner: platform::ChannelResourceSender<'a>,
