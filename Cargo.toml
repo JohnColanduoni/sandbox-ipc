@@ -50,10 +50,12 @@
 # harness = false
 
 [workspace]
-members = ["sandbox-ipc-core"]
+members = ["sandbox-ipc-core", "sandbox-ipc-test"]
 
 [patch.crates-io]
 compio-core = { path = "../compio/compio-core" }
 compio-ipc = { path = "../compio/compio-ipc" }
 compio = { path = "../compio" }
+mach-core = { path = "../machapi/mach-core" }
 mach-port = { path = "../machapi/mach-port" }
+mach-sys = { path = "../machapi/mach-sys" }

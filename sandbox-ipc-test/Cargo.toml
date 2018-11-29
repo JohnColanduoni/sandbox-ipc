@@ -1,0 +1,14 @@
+cargo-features = ["rename-dependency"]
+
+[package]
+name = "sandbox-ipc-test"
+version = "0.0.0"
+edition = "2018"
+
+[dependencies]
+sandbox-ipc-core = { path = "../sandbox-ipc-core" }
+
+serde_json = "1.0"
+
+futures = { package = "futures-preview", version = "0.3.0-alpha.9" }
+compio = "0.1"

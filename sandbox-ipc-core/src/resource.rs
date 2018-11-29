@@ -63,8 +63,14 @@ pub struct ResourceTransceiver {
 /// inside the serialized data. In particular, [`Channel`](crate::channel::Channel) provides an appropriate implementation
 /// when sending a message.
 pub trait ResourceSerializer {
-    fn serialize_owned(&self, resource: Resource, serializer: &mut erased_serde::Serializer) -> Result<(), erased_serde::Error>;
-    fn serialize_ref(&self, resource: ResourceRef, serializer: &mut erased_serde::Serializer) -> Result<(), erased_serde::Error>;
+    fn serialize_owned(&self, resource: Resource, serializer: &mut erased_serde::Serializer) -> io::Result<()>;
+    
+    ///
+    /// 
+    /// The caller must ensure that the ResourceRef lives at least as long as the `ResourceSerializer` is set.
+    /// `ResourceSerializer`s must ensure they do not keep `ResourceRef`s after the reference to the data being
+    /// serialized is released.
+    unsafe fn serialize_ref(&self, resource: ResourceRef, serializer: &mut erased_serde::Serializer) -> io::Result<()>;
 }
 
 /// Trait that facilitates the deserialization of data containing OS resources by `serde`.
@@ -74,7 +80,7 @@ pub trait ResourceSerializer {
 /// from the serialized data. In particular, [`Channel`](crate::channel::Channel) provides an appropriate implementation
 /// when receiving a message.
 pub trait ResourceDeserializer {
-    fn deserialize(&self, deserializer: &mut erased_serde::Deserializer) -> Result<Resource, erased_serde::Error>;
+    fn deserialize(&self, deserializer: &mut erased_serde::Deserializer) -> io::Result<Resource>;
 }
 
 passthrough_debug!(Resource => inner);

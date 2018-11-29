@@ -5,9 +5,13 @@ use std::{io, mem, slice, fmt};
 use std::pin::{Pin, Unpin};
 use std::sync::Arc;
 use std::time::Duration;
-use std::os::raw::c_int;
+use std::process::{Command, Child};
+use std::ffi::CString;
+use std::os::raw::{c_int, c_uint, c_char};
 use std::os::unix::prelude::*;
 
+use uuid::Uuid;
+use rand::Rng;
 use serde::{Serialize, Serializer, Deserialize, Deserializer};
 use futures_core::{
     future::Future,
@@ -17,7 +21,9 @@ use futures_util::try_ready;
 use compio_core::queue::Registrar;
 use compio_core::os::macos::{RegistrarExt, PortRegistration, RawPort};
 use mach_port::{Port, MsgBuffer, PortMoveMode, PortCopyMode, MsgDescriptorKindMut};
+use mach_core::{mach_call, mach_kern_call};
 
+// TODO: notification of broken pipe (i.e. other side of channel dropped)
 #[derive(Clone)]
 pub struct Channel {
     inner: Arc<_Channel>,
@@ -35,6 +41,14 @@ struct _Channel {
 pub struct PreChannel {
     tx: Port,
     rx: Port,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ChildChannelMetadata {
+    bootstrap_name: String,
+    token: [u8; 32],
+    resource_rx: bool,
+    resource_tx: bool,
 }
 
 #[derive(Debug)]
@@ -361,6 +375,123 @@ impl PreChannel {
             rx_registration,
         })
     }
+
+    pub fn establish_with_child<T, R, RM>(builder: &mut crate::channel::ChildChannelBuilder<T, R>, relay_metadata: RM) -> io::Result<(Child, Self, Option<ResourceTransceiver>)> where
+        RM: for<'a> FnOnce(&'a mut Command, ChildChannelMetadata) -> io::Result<()>,
+    {
+        // The process for launching a child that has a mach channel with us is as follows:
+        //
+        // * Create a port and register the send right with the bootstrap server, under a random name.
+        // * Generate a random token.
+        // * Launch the process, somehow passing the random service name and random token to it.
+        // * The process gets a send right for our temporary port from the bootstrap server.
+        // * It sends a message containing the token as inline data, and containing a send right
+        //   to a port it controls and a receive right to which it has a send right.
+        // * We validate the token, and create a channel with the rights received from the child process.
+        //
+        // The token exists because in theory another process could race out child to connect to our globally visible
+        // bootstrap service, and then trick us into communicating with it instead of our child process.
+        let bootstrap_name = format!("rust.sandbox-ipc-core.child.{}", Uuid::new_v4());
+        let bootstrap_name_cstr = CString::new(bootstrap_name.clone()).unwrap();
+        let init_port = Port::new()?;
+        let init_port_sender = init_port.make_sender()?;
+        unsafe {
+            let mut bootstrap_port = 0;
+            mach_kern_call!(log: mach_sys::task_get_special_port(
+                mach_sys::mach_task_self(),
+                mach_sys::TASK_BOOTSTRAP_PORT as _,
+                &mut bootstrap_port,
+            ), "failed to retreive bootstrap port: {}")?;
+
+            debug!("registering temporary mach bootstrap service {:?}", bootstrap_name);
+            mach_kern_call!(log: bootstrap_register2(
+                bootstrap_port,
+                bootstrap_name_cstr.as_ptr(),
+                init_port_sender.as_raw_port(),
+                0,
+            ), "failed to register port for child communication with bootstrap server: {}")?;
+        }
+
+        let metadata = ChildChannelMetadata {
+            bootstrap_name,
+            token: rand::thread_rng().gen(),
+            resource_tx: builder.resource_rx,
+            resource_rx: builder.resource_tx,
+        };
+        let token = metadata.token.clone();
+        relay_metadata(&mut builder.command, metadata)?;
+
+        let child = builder.command.spawn()?;
+
+        let mut msg = MsgBuffer::new();
+        msg.reserve_descriptors(2);
+        msg.reserve_inline_data(token.len());
+        init_port.recv(&mut msg, builder.timeout)?;
+
+        if msg.inline_data() != &token {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "token in message received on advertised port did not match the one passed to child process"));
+        }
+
+        let mut descriptors = msg.descriptors_mut();
+        let tx_descriptor = descriptors.next()
+            .and_then(|desc| if let MsgDescriptorKindMut::Port(desc) = desc.kind_mut() { Some(desc) } else { None })
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing tx descriptor in message from child process"))?;
+        let rx_descriptor = descriptors.next()
+            .and_then(|desc| if let MsgDescriptorKindMut::Port(desc) = desc.kind_mut() { Some(desc) } else { None })
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing rx descriptor in message from child process"))?;
+        let tx = tx_descriptor.take_port()?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing port in tx descriptor in message from child process"))?;
+        let rx = rx_descriptor.take_port()?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing port in rx descriptor in message from child process"))?;
+
+        let resource_transceiver = match (builder.resource_tx, builder.resource_rx) {
+            (false, false) => None,
+            (tx, rx) => Some(ResourceTransceiver::Mach { tx, rx }),
+        };
+
+        Ok((child, PreChannel { tx, rx }, resource_transceiver))
+    }
+}
+
+impl ChildChannelMetadata {
+    pub fn into_pre_channel(self) -> io::Result<(PreChannel, Option<ResourceTransceiver>)> {
+        let bootstrap_name_cstr = CString::new(self.bootstrap_name)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, format!("invalid bootstrap service name: {}", err)))?;
+        let init_port = unsafe {
+            let mut bootstrap_port = 0;
+            mach_kern_call!(log: mach_sys::task_get_special_port(
+                mach_sys::mach_task_self(),
+                mach_sys::TASK_BOOTSTRAP_PORT as _,
+                &mut bootstrap_port,
+            ), "failed to retreive bootstrap port: {}")?;
+
+            let mut init_port = 0;
+            mach_kern_call!(log: bootstrap_look_up2(
+                bootstrap_port,
+                bootstrap_name_cstr.as_ptr(),
+                &mut init_port,
+                0,
+                0,
+            ), "failed to register port for child communication with bootstrap server: {}")?;
+            Port::from_raw_port(init_port)?
+        };
+
+        let (ours, theirs) = PreChannel::pair()?;
+
+        let mut msg = MsgBuffer::new();
+        msg.move_right(PortMoveMode::Send, theirs.tx);
+        msg.move_right(PortMoveMode::Receive, theirs.rx);
+        msg.extend_inline_data(&self.token);
+
+        init_port.send(&mut msg, None)?;
+
+        let resource_transceiver = match (self.resource_tx, self.resource_rx) {
+            (false, false) => None,
+            (tx, rx) => Some(ResourceTransceiver::Mach { tx, rx }),
+        };
+
+        Ok((ours, resource_transceiver))
+    }
 }
 
 pub trait ResourceExt: Sized {
@@ -490,6 +621,9 @@ impl self::unix::ResourceTransceiverExt for crate::resource::ResourceTransceiver
 }
 
 extern "C" {
+    fn bootstrap_register2(bp: RawPort, service_name: *const c_char, sp: RawPort, flags: u64) -> mach_sys::kern_return_t;
+    fn bootstrap_look_up2(bp: RawPort, service_name: *const c_char, sp: *mut RawPort, target_pid: libc::pid_t, flags: u64) -> mach_sys::kern_return_t;
+
     fn fileport_makeport(fd: c_int, port: *mut RawPort) -> c_int;
     fn fileport_makefd(port: RawPort) -> c_int;
 }
