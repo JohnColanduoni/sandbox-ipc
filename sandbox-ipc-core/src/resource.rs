@@ -61,3 +61,7 @@ impl<'a> fmt::Debug for ResourceRef<'a> {
 }
 
 passthrough_debug!(ResourceTransceiver => inner);
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(transparent)]
+pub struct ResourceMetadata(pub(crate) platform::ResourceMetadata);

@@ -1,4 +1,4 @@
-use super::{Resource, ResourceRef, ResourceTransceiver};
+use super::{Resource, ResourceRef, ResourceTransceiver, ResourceMetadata, ResourceKind};
 use crate::unix::{ScopedFd};
 
 use std::{io, mem, slice, fmt};
@@ -11,7 +11,6 @@ use std::os::raw::{c_int, c_char};
 
 use uuid::Uuid;
 use rand::Rng;
-use serde::{Serialize, Deserialize, Deserializer};
 use futures_core::{
     future::Future,
     task::{Poll, LocalWaker},
@@ -48,13 +47,6 @@ pub struct ChildChannelMetadata {
     token: [u8; 32],
     resource_rx: bool,
     resource_tx: bool,
-}
-
-// Used only for serialization purposes
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
-enum ResourceKind {
-    Port,
-    Fd,
 }
 
 impl Channel {
@@ -154,7 +146,7 @@ pub struct ChannelResourceSender<'a> {
 }
 
 impl<'a> ChannelResourceSender<'a> {
-    pub fn move_resource(&mut self, resource: Resource) -> io::Result<impl Serialize> {
+    pub fn move_resource(&mut self, resource: Resource) -> io::Result<ResourceMetadata> {
         let (port, mode, kind) = match resource {
             Resource::Port(mode, port) => (port.into_raw_port(), mode, ResourceKind::Port),
             Resource::Fd(fd) => unsafe {
@@ -167,12 +159,12 @@ impl<'a> ChannelResourceSender<'a> {
                 (port, PortMoveMode::Send, ResourceKind::Fd)
             },
         };
-        let descriptor_index = self.msg.descriptors().len();
+        let descriptor_index = self.msg.descriptors().len() as u32;
         unsafe { self.msg.move_right_raw(mode, port); }
-        Ok((descriptor_index as u32, kind))
+        Ok(ResourceMetadata { descriptor_index, kind })
     }
 
-    pub fn copy_resource(&mut self, resource: ResourceRef<'a>) -> io::Result<impl Serialize> {
+    pub fn copy_resource(&mut self, resource: ResourceRef<'a>) -> io::Result<ResourceMetadata> {
         let (port, mode, kind) = match resource {
             ResourceRef::Port(mode, port) => (port.as_raw_port(), mode, ResourceKind::Port),
             ResourceRef::Fd(fd) => unsafe {
@@ -187,9 +179,9 @@ impl<'a> ChannelResourceSender<'a> {
                 (port, PortCopyMode::Send, ResourceKind::Fd)
             },
         };
-        let descriptor_index = self.msg.descriptors().len();
+        let descriptor_index = self.msg.descriptors().len() as u32;
         unsafe { self.msg.copy_right_raw(mode, port); }
-        Ok((descriptor_index as u32, kind))
+        Ok(ResourceMetadata { descriptor_index, kind })
     }
 
     pub fn finish<'b>(mut self, buffer: &'b [u8]) -> impl Future<Output=io::Result<()>> + 'a + 'b where
@@ -224,9 +216,8 @@ impl<'a> ChannelResourceReceiver<'a> {
         self.data_len
     }
 
-    pub fn recv_resource<'de, D: Deserializer<'de>>(&mut self, deserializer: D) -> io::Result<Resource> {
-        let (descriptor_index, kind): (u32, ResourceKind) = Deserialize::deserialize(deserializer)
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, format!("failed to deserialize resource metadata: {}", err)))?;
+    pub fn recv_resource(&mut self, metadata: ResourceMetadata) -> io::Result<Resource> {
+        let ResourceMetadata { descriptor_index, kind } = metadata;
 
         let descriptor = self.msg.descriptors_mut().nth(descriptor_index as usize)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "out of range descriptor index in data"))?;

@@ -1,11 +1,10 @@
 use crate::platform;
-use crate::resource::{Resource, ResourceRef, ResourceTransceiver};
+use crate::resource::{Resource, ResourceRef, ResourceTransceiver, ResourceMetadata};
 
 use std::{io};
 use std::time::Duration;
 use std::process::{Command, Child};
 
-use serde::{Serialize, Deserializer};
 use futures_core::future::Future;
 use compio_core::queue::Registrar;
 
@@ -103,8 +102,8 @@ impl<'a> ChannelResourceSender<'a> {
     /// The data required to reconstruct the resource on the other side of the connection will be written to `serializer`. It is the
     /// caller's responsibility to ensure that the data is embedded in a message in a manner suitable for the receiver to call
     /// `ChannelResourceReceiver::recv_resource`.
-    pub fn move_resource(&mut self, resource: Resource) -> io::Result<impl Serialize> {
-        self.inner.move_resource(resource.inner)
+    pub fn move_resource(&mut self, resource: Resource) -> io::Result<ResourceMetadata> {
+        self.inner.move_resource(resource.inner).map(ResourceMetadata)
     }
 
     /// Embeds a [`Resource`] in a message being constructed, copying ownership to the receiver.
@@ -112,8 +111,8 @@ impl<'a> ChannelResourceSender<'a> {
     /// The data required to reconstruct the resource on the other side of the connection will be written to `serializer`. It is the
     /// caller's responsibility to ensure that the data is embedded in a message in a manner suitable for the receiver to call
     /// `ChannelResourceReceiver::recv_resource`.
-    pub fn copy_resource(&mut self, resource: ResourceRef<'a>) -> io::Result<impl Serialize> {
-        self.inner.copy_resource(resource.inner)
+    pub fn copy_resource(&mut self, resource: ResourceRef<'a>) -> io::Result<ResourceMetadata> {
+        self.inner.copy_resource(resource.inner).map(ResourceMetadata)
     }
 
     /// Finishes sending the message
@@ -142,8 +141,8 @@ impl<'a> ChannelResourceReceiver<'a> {
     /// 
     /// On some platforms, failing to call `recv_resource` for all resources in the message may cause the resources to leak
     /// in certain circumstances.
-    pub fn recv_resource<'de, D: Deserializer<'de>>(&mut self, deserializer: D) -> io::Result<Resource> {
-        let inner = self.inner.recv_resource(deserializer)?;
+    pub fn recv_resource(&mut self, metadata: ResourceMetadata) -> io::Result<Resource> {
+        let inner = self.inner.recv_resource(metadata.0)?;
         Ok(Resource { inner })
     }
 }

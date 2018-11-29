@@ -44,7 +44,7 @@ impl IpcTest for SendFile {
         context.block_on(async {
             let mut buffer = vec![0u8; 1024];
             let mut receiver = await!(channel.recv_with_resources(1, &mut buffer)).unwrap();
-            let resource = receiver.recv_resource(&mut serde_json::Deserializer::from_slice(&buffer[..receiver.data_len()])).unwrap();
+            let resource = receiver.recv_resource(serde_json::from_slice(&buffer[..receiver.data_len()]).unwrap()).unwrap();
             let mut f = unsafe { File::from_raw_fd(resource.into_raw_fd().unwrap()) };
             f.seek(SeekFrom::Start(0)).unwrap();
             let mut file_buffer = Vec::new();

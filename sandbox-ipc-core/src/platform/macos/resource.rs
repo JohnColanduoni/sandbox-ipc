@@ -24,6 +24,19 @@ pub enum ResourceTransceiver {
     Mach { tx: bool, rx: bool },
 }
 
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ResourceMetadata {
+    pub(crate) descriptor_index: u32,
+    pub(crate) kind: ResourceKind,
+}
+
+// Used only for serialization purposes
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub enum ResourceKind {
+    Port,
+    Fd,
+}
+
 pub trait ResourceExt: Sized {
     fn from_mach_port(mode: PortMoveMode, port: Port) -> Self;
     fn as_mach_port(&self) -> Option<&Port>;
