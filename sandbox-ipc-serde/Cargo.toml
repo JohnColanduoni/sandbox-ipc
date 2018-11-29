@@ -1,0 +1,9 @@
+[package]
+name = "sandbox-ipc-serde"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+sandbox-ipc-core = { path = "../sandbox-ipc-core" }
+
+serde = "1.0"

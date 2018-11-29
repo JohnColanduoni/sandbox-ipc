@@ -50,7 +50,7 @@
 # harness = false
 
 [workspace]
-members = ["sandbox-ipc-core", "sandbox-ipc-test"]
+members = ["sandbox-ipc-core", "sandbox-ipc-serde", "sandbox-ipc-test"]
 
 [patch.crates-io]
 compio-core = { path = "../compio/compio-core" }
