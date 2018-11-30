@@ -11,9 +11,9 @@ sandbox-ipc-serde = { path = "sandbox-ipc-serde" }
 members = ["sandbox-ipc-core", "sandbox-ipc-serde", "sandbox-ipc-test"]
 
 [patch.crates-io]
-compio-core = { path = "../compio/compio-core" }
-compio-ipc = { path = "../compio/compio-ipc" }
-compio = { path = "../compio" }
-mach-core = { path = "../machapi/mach-core" }
-mach-port = { path = "../machapi/mach-port" }
-mach-sys = { path = "../machapi/mach-sys" }
+compio-core = { git = "https://github.com/JohnColanduoni/compio", rev = "247ad6b84dbcbdba6e902fd123fefc897cfc26dd" }
+compio-ipc = { git = "https://github.com/JohnColanduoni/compio", rev = "247ad6b84dbcbdba6e902fd123fefc897cfc26dd" }
+compio = { git = "https://github.com/JohnColanduoni/compio", rev = "247ad6b84dbcbdba6e902fd123fefc897cfc26dd" }
+mach-core = { git = "https://github.com/JohnColanduoni/mach-rust", rev = "5d6f855edca2820fe2d256b3664eb332b732f6a5" }
+mach-port = { git = "https://github.com/JohnColanduoni/mach-rust", rev = "5d6f855edca2820fe2d256b3664eb332b732f6a5" }
+mach-sys = { git = "https://github.com/JohnColanduoni/mach-rust", rev = "5d6f855edca2820fe2d256b3664eb332b732f6a5" }
